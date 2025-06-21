@@ -5,4 +5,4 @@ example_proj/
 config/.env
 **/__pycache__/
 logs/
-
+db.sqlite3
