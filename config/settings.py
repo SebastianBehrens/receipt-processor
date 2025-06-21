@@ -14,26 +14,25 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from config/.env
+# Load environment variables from .env file
 load_dotenv(Path(__file__).parent / '.env')
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path('/Users/sebastianbehrens/coding/htmx-receipt-processor')
+BASE_DIR = Path(os.environ['BASE_DIR'])
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-3=q1151stnn$^q279xibxu2dagbkj7bg4%ae9y&jj#!ricnq=n"
+SECRET_KEY = os.environ['SECRET_KEY']
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ['DEBUG']
 
-# Development vs Production configuration
-USE_AUTHELIA = os.environ.get('USE_AUTHELIA', 'False').lower() == 'true'
-
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'receipt-processor']
+# Parse ALLOWED_HOSTS from environment variable (comma-separated string)
+ALLOWED_HOSTS_STR = os.environ.get('ALLOWED_HOSTS', 'localhost')
+ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_STR.split(',') if host.strip()]
 
 
 # Application definition
@@ -54,19 +53,9 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
-]
-
-# Add Authelia middleware only when needed
-if USE_AUTHELIA:
-    MIDDLEWARE.extend([
-        "core.middleware.AutheliaRemoteUserMiddleware",  # Custom middleware for Authelia
-        "core.middleware.AutheliaHeadersMiddleware",  # Debug middleware (optional)
-    ])
-
-MIDDLEWARE.extend([
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-])
+]
 
 ROOT_URLCONF = "config.urls"
 
@@ -122,12 +111,6 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = "static/"
-STATIC_ROOT = BASE_DIR / "staticfiles"
-
-# Additional locations of static files
-STATICFILES_DIRS = [
-    BASE_DIR / "static",
-] if (BASE_DIR / "static").exists() else []
 
 # Media files (user uploads)
 MEDIA_URL = "/media/"
@@ -189,30 +172,3 @@ LOGGING = {
         },
     },
 }
-
-# Authentication configuration for Authelia
-if USE_AUTHELIA:
-    AUTHENTICATION_BACKENDS = [
-        'django.contrib.auth.backends.RemoteUserBackend',  # Prioritize RemoteUserBackend for Authelia
-        'django.contrib.auth.backends.ModelBackend',  # Keep ModelBackend for superuser/local admin access
-    ]
-    
-    # Automatically create new Django users if they don't exist
-    # This is usually desired with remote authentication
-    AUTH_REMOTE_USER_CREATE_UNKNOWN_USER = True
-else:
-    # Default Django authentication for local development
-    AUTHENTICATION_BACKENDS = [
-        'django.contrib.auth.backends.ModelBackend',
-    ]
-
-# Authelia configuration
-# Authelia sends the username in the 'Remote-User' header by default
-# If Authelia is configured to send a different header, uncomment and modify:
-# REMOTE_USER_HEADER = 'HTTP_X_AUTHELIA_USER'  # Django converts hyphens to underscores and prepends HTTP_
-
-# Optional: Configure additional user attributes from Authelia headers
-# These headers need to be configured in your Authelia and Traefik setup
-# REMOTE_USER_EMAIL_HEADER = 'HTTP_X_AUTHELIA_EMAIL'
-# REMOTE_USER_FIRST_NAME_HEADER = 'HTTP_X_AUTHELIA_NAME'
-# REMOTE_USER_LAST_NAME_HEADER = 'HTTP_X_AUTHELIA_SURNAME'
