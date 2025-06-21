@@ -48,10 +48,43 @@
         <div class="flex items-center gap-2">
             <div class="avatar placeholder">
                 <div class="bg-primary text-primary-content rounded-full w-8">
-                    <span class="text-xs">U</span>
+                    <span class="text-xs">
+                        {% if user.is_authenticated %}
+                            {{ user.first_name.0|default:user.username.0|upper }}{{ user.last_name.0|upper }}
+                        {% else %}
+                            U
+                        {% endif %}
+                    </span>
                 </div>
             </div>
-            <span class="text-sm text-base-content hidden sm:inline">User</span>
+            <span class="text-sm text-base-content hidden sm:inline">
+                {% if user.is_authenticated %}
+                    {% if user.first_name and user.last_name %}
+                        {{ user.first_name }} {{ user.last_name }}
+                    {% elif user.first_name %}
+                        {{ user.first_name }}
+                    {% else %}
+                        {{ user.username }}
+                    {% endif %}
+                {% else %}
+                    Guest
+                {% endif %}
+            </span>
+            {% if user.is_authenticated %}
+                <div class="dropdown dropdown-end">
+                    <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
+                        <span class="material-symbols-rounded text-xl">expand_more</span>
+                    </div>
+                    <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-52">
+                        {% if user.email %}
+                            <li><a class="text-xs opacity-60">{{ user.email }}</a></li>
+                            <li><hr class="my-1"></li>
+                        {% endif %}
+                        <li><a href="/admin/" target="_blank">Admin Panel</a></li>
+                        <li><a href="#" class="text-error">Sign Out</a></li>
+                    </ul>
+                </div>
+            {% endif %}
         </div>
     </div>
 </div>
