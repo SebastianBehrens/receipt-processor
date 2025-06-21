@@ -33,9 +33,7 @@ DEBUG = True
 # Development vs Production configuration
 USE_AUTHELIA = os.environ.get('USE_AUTHELIA', 'False').lower() == 'true'
 
-# Configure for deployment with Traefik and Authelia
-# Add your domain(s) here when deploying
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']  # '*' for development only - restrict in production
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'receipt-processor']
 
 
 # Application definition
@@ -124,6 +122,12 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Additional locations of static files
+STATICFILES_DIRS = [
+    BASE_DIR / "static",
+] if (BASE_DIR / "static").exists() else []
 
 # Media files (user uploads)
 MEDIA_URL = "/media/"
