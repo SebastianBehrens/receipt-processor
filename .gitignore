@@ -1,0 +1,8 @@
+.venv/
+example_proj/
+/data
+.DS_Store
+config/.env
+**/__pycache__/
+logs/
+
