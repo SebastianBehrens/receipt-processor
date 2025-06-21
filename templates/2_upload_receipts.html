@@ -1,0 +1,72 @@
+<!-- Upload Receipts Template -->
+<div class="card-body">
+    <div class="flex justify-center items-center h-full">
+        <div class="text-center max-w-md">
+            <h2 class="text-2xl font-bold text-base-content mb-6">Upload Receipts</h2>
+            <p class="text-base-content/60 mb-8">Upload your receipt images to get started with processing</p>
+            
+            <form hx-post="/core/upload/"
+                  hx-target="body"
+                  hx-swap="innerHTML"
+                  hx-encoding="multipart/form-data">
+                {% csrf_token %}
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Pick a file</legend>
+                    <input type="file" name="receipt_file" id="receipt_file" class="file-input" accept=".zip" onchange="toggleProceedButton()" />
+                    <label class="label text-center">
+                        <span class="label-text-alt text-base-content/60">ZIP files only</span>
+                    </label>
+                </fieldset>
+                
+                <fieldset class="fieldset mt-6">
+                    <legend class="fieldset-legend">Payer</legend>
+                    <div class="flex justify-center">
+                        <div class="w-full max-w-xs">
+                            <select class="select select-bordered validator w-full" name="payer" id="payer_select" onchange="toggleProceedButton()" required>
+                                <option disabled selected value="">Pick the Payer</option>
+                                <option>Iva</option>
+                                <option>Sebastian</option>
+                            </select>
+                            <p class="validator-hint">Required</p>
+                        </div>
+                    </div>
+                </fieldset>
+                
+                <div class="mt-6">
+                    <button type="submit" id="proceed_button" class="btn btn-primary btn-lg" disabled>
+                        <span class="material-symbols-rounded text-xl">arrow_forward</span>
+                        Proceed
+                    </button>
+                </div>
+            </form>
+            
+            <!-- Response area for HTMX -->
+            <div id="upload-response" class="mt-4"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+function toggleProceedButton() {
+    const fileInput = document.getElementById('receipt_file');
+    const payerSelect = document.getElementById('payer_select');
+    const proceedButton = document.getElementById('proceed_button');
+    
+    // Check if both file is selected and payer is chosen
+    const hasFile = fileInput.files.length > 0;
+    const hasPayer = payerSelect.value && payerSelect.value !== "";
+    
+    if (hasFile && hasPayer) {
+        proceedButton.disabled = false;
+        proceedButton.classList.remove('btn-disabled');
+    } else {
+        proceedButton.disabled = true;
+        proceedButton.classList.add('btn-disabled');
+    }
+}
+
+// Initialize button state on page load
+document.addEventListener('DOMContentLoaded', function() {
+    toggleProceedButton();
+});
+</script> 

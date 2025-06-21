@@ -1,0 +1,451 @@
+<!-- Extracted Data Table Template -->
+<div class="card bg-base-100 shadow-xl h-full">
+    <div class="card-body flex flex-col h-full p-6">
+        {% csrf_token %}
+        <!-- Header -->
+        <div class="flex-shrink-0 mb-4">
+            <h2 class="card-title text-2xl mb-2">Extracted Receipt Data</h2>
+            <p class="text-base-content/70">Items and prices extracted from the receipt</p>
+        </div>
+        
+        <!-- Main Table Container -->
+        <div class="flex-1 overflow-hidden">
+            <div class="overflow-auto h-full">
+                <table class="table table-zebra table-pin-rows table-compact">
+                    <thead>
+                        <tr>
+                            <th class="w-12">#</th>
+                            <th class="w-60">Item</th>
+                            <th class="w-20">Price</th>
+                            <th class="w-20">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="items-tbody">
+                        {% for item in extracted_data %}
+                        <tr id="row-{{ forloop.counter0 }}" class="group h-12" data-deleted="false">
+                            <th class="align-middle">{{ forloop.counter }}</th>
+                            
+                            <!-- Item Name Cell -->
+                            <td class="align-middle py-1">
+                                <div class="form-control">
+                                    <input type="text" 
+                                           name="item-{{ forloop.counter0 }}"
+                                           value="{{ item.item }}"
+                                           class="input input-xs input-ghost validator w-full focus:input-bordered"
+                                           placeholder="Item name"
+                                           minlength="3"
+                                           required
+                                           data-row-index="{{ forloop.counter0 }}">
+                                </div>
+                            </td>
+                            
+                            <!-- Price Cell -->
+                            <td class="align-middle py-1">
+                                <div class="form-control">
+                                    <input type="number" 
+                                           step="0.01"
+                                           min="0"
+                                           name="price-{{ forloop.counter0 }}"
+                                           value="{{ item.price }}"
+                                           class="input input-xs input-ghost validator w-full focus:input-bordered no-spinner"
+                                           placeholder="0.00"
+                                           required
+                                           data-row-index="{{ forloop.counter0 }}">
+                                </div>
+                            </td>
+                            
+                            <!-- Actions Cell -->
+                            <td class="align-middle py-1">
+                                <button class="btn btn-xs btn-ghost delete-btn tooltip opacity-60 hover:opacity-100" 
+                                        data-tip="Delete item"
+                                        onclick="toggleDeleteRow({{ forloop.counter0 }})">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                    </svg>
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Footer Actions -->
+        <div class="flex-shrink-0 mt-4">
+            <div class="flex flex-col gap-4">
+                <!-- Top Row: Add Item Button -->
+                <div class="flex justify-start">
+                    <button class="btn btn-outline btn-sm w-32" onclick="addNewRow()">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                        </svg>
+                        Add Item
+                    </button>
+                </div>
+                
+                <!-- Bottom Row: Cost Display and Action Buttons -->
+                <div class="flex flex-col sm:flex-row gap-4 justify-between items-center">
+                    <!-- Status/Cost Display -->
+                    <div class="flex items-center gap-4">
+                        <div id="save-status" class="text-sm"></div>
+                        {% if cost %}
+                        <div class="text-sm text-base-content/60">
+                            API Cost: ${{ cost|floatformat:4 }}
+                        </div>
+                        {% endif %}
+                    </div>
+                    
+                    <!-- Action Buttons -->
+                    <div class="flex gap-2 w-full sm:w-auto">
+                        <button class="btn btn-outline flex-1 sm:flex-none sm:w-32"
+                                hx-post="/core/extract-current-image/"
+                                hx-target="#extracted-data-container"
+                                hx-swap="innerHTML"
+                                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                                hx-indicator="#loading-indicator">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                            </svg>
+                            Re-extract
+                        </button>
+                        
+                        <button class="btn btn-primary flex-1 sm:flex-none sm:w-40" 
+                                id="confirm-btn"
+                                onclick="confirmExtractionAndNext()">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            Confirm & Next
+                        </button>
+                        
+                        {% if show_next_button %}
+                        <button class="btn btn-secondary flex-1 sm:flex-none sm:w-32"
+                                hx-post="/core/next-file/"
+                                hx-target="body"
+                                hx-swap="innerHTML"
+                                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
+                            </svg>
+                            Skip & Next
+                        </button>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Loading indicator -->
+<div id="loading-indicator" class="htmx-indicator">
+    <div class="fixed inset-0 bg-black/20 flex items-center justify-center z-50">
+        <div class="loading loading-spinner loading-lg text-primary"></div>
+    </div>
+</div>
+
+<style>
+/* Remove spinner arrows from number inputs */
+.no-spinner::-webkit-outer-spin-button,
+.no-spinner::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.no-spinner {
+    -moz-appearance: textfield;
+}
+
+/* Compact table rows */
+.table-compact tbody tr {
+    height: 3rem;
+}
+
+.table-compact .form-control {
+    margin: 0;
+}
+</style>
+
+<script>
+// Minimal JavaScript for UI state management and HTMX enhancements
+document.addEventListener('DOMContentLoaded', function() {
+    // Auto-focus new rows
+    document.addEventListener('htmx:afterSettle', function(e) {
+        if (e.target.matches('tr[id^="row-"]')) {
+            const firstInput = e.target.querySelector('input[type="text"]');
+            if (firstInput) {
+                firstInput.focus();
+                firstInput.select();
+            }
+        }
+    });
+    
+    // Handle successful extraction confirmation
+    document.addEventListener('htmx:afterRequest', function(e) {
+        if (e.detail.xhr.status === 200 && e.target.id === 'confirm-btn') {
+            const response = JSON.parse(e.detail.xhr.responseText);
+            if (response.success) {
+                showToast('success', `Extraction confirmed! ${response.item_count} items saved.`);
+                setTimeout(() => {
+                    window.location.href = '/core/step/4/';
+                }, 2000);
+            }
+        }
+    });
+    
+    // Handle errors
+    document.addEventListener('htmx:responseError', function(e) {
+        showToast('error', 'An error occurred. Please try again.');
+    });
+});
+
+// Toggle delete state for rows
+function toggleDeleteRow(index) {
+    console.log('toggleDeleteRow called with index:', index); // Debug log
+    const row = document.getElementById(`row-${index}`);
+    if (!row) {
+        console.error('Row not found:', `row-${index}`);
+        return;
+    }
+    
+    const deleteBtn = row.querySelector('.delete-btn');
+    if (!deleteBtn) {
+        console.error('Delete button not found in row:', index);
+        return;
+    }
+    
+    const isDeleted = row.dataset.deleted === 'true';
+    console.log('Current deleted state:', isDeleted); // Debug log
+    
+    if (isDeleted) {
+        // Restore row
+        row.dataset.deleted = 'false';
+        row.classList.remove('opacity-50');
+        row.style.textDecoration = '';
+        
+        // Reset inputs
+        row.querySelectorAll('input').forEach(input => {
+            input.disabled = false;
+        });
+        
+        // Change button back to delete
+        deleteBtn.classList.remove('btn-success');
+        deleteBtn.classList.add('btn-ghost');
+        deleteBtn.dataset.tip = 'Delete item';
+        deleteBtn.innerHTML = `
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+            </svg>
+        `;
+        console.log('Row restored');
+    } else {
+        // Mark as deleted
+        row.dataset.deleted = 'true';
+        row.classList.add('opacity-50');
+        row.style.textDecoration = 'line-through';
+        
+        // Disable inputs
+        row.querySelectorAll('input').forEach(input => {
+            input.disabled = true;
+        });
+        
+        // Change button to restore (plus icon)
+        deleteBtn.classList.remove('btn-ghost');
+        deleteBtn.classList.add('btn-success');
+        deleteBtn.dataset.tip = 'Restore item';
+        deleteBtn.innerHTML = `
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+            </svg>
+        `;
+        console.log('Row marked as deleted');
+    }
+}
+
+// Add new row
+function addNewRow() {
+    const tbody = document.getElementById('items-tbody');
+    const newIndex = tbody.children.length;
+    
+    const newRow = document.createElement('tr');
+    newRow.id = `row-${newIndex}`;
+    newRow.className = 'group h-12';
+    newRow.dataset.deleted = 'false';
+    
+    newRow.innerHTML = `
+        <th class="align-middle">${newIndex + 1}</th>
+        <td class="align-middle py-1">
+            <div class="form-control">
+                <input type="text" 
+                       name="item-${newIndex}"
+                       value="New Item"
+                       class="input input-xs input-ghost validator w-full focus:input-bordered"
+                       placeholder="Item name"
+                       minlength="3"
+                       required
+                       data-row-index="${newIndex}">
+            </div>
+        </td>
+        <td class="align-middle py-1">
+            <div class="form-control">
+                <input type="number" 
+                       step="0.01"
+                       min="0"
+                       name="price-${newIndex}"
+                       value="0.00"
+                       class="input input-xs input-ghost validator w-full focus:input-bordered no-spinner"
+                       placeholder="0.00"
+                       required
+                       data-row-index="${newIndex}">
+            </div>
+        </td>
+        <td class="align-middle py-1">
+            <button class="btn btn-xs btn-ghost delete-btn tooltip opacity-60 hover:opacity-100" 
+                    data-tip="Delete item"
+                    onclick="toggleDeleteRow(${newIndex})">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+            </button>
+        </td>
+    `;
+    
+    tbody.appendChild(newRow);
+    
+    // Auto-focus the new item input
+    const itemInput = newRow.querySelector('input[type="text"]');
+    itemInput.focus();
+    itemInput.select();
+}
+
+// Confirm extraction and proceed to next file - collect data and store in STATE
+function confirmExtractionAndNext() {
+    console.log('confirmExtractionAndNext called');
+    
+    // Check form validity first using HTML5 validation
+    const form = document.querySelector('#items-tbody').closest('form') || document.createElement('form');
+    const inputs = document.querySelectorAll('#items-tbody input.validator');
+    let isValid = true;
+    
+    inputs.forEach(input => {
+        if (!input.checkValidity()) {
+            isValid = false;
+            input.reportValidity();
+        }
+    });
+    
+    if (!isValid) {
+        showToast('error', 'Please fix validation errors before confirming');
+        return;
+    }
+    
+    // Collect all non-deleted rows data
+    const rows = document.querySelectorAll('#items-tbody tr');
+    const extractedData = [];
+    
+    rows.forEach((row, index) => {
+        // Skip deleted rows
+        if (row.dataset.deleted === 'true') {
+            console.log(`Skipping deleted row ${index}`);
+            return;
+        }
+        
+        const itemInput = row.querySelector('input[type="text"]');
+        const priceInput = row.querySelector('input[type="number"]');
+        
+        if (itemInput && priceInput) {
+            const itemValue = itemInput.value.trim();
+            const priceValue = parseFloat(priceInput.value);
+            
+            // Basic validation (HTML5 validators should catch most issues)
+            if (itemValue && !isNaN(priceValue) && priceValue >= 0) {
+                extractedData.push({
+                    item: itemValue,
+                    price: priceValue.toFixed(2)
+                });
+            }
+        }
+    });
+    
+    // Don't proceed if no data
+    if (extractedData.length === 0) {
+        showToast('error', 'No valid items to confirm. Please add at least one item.');
+        return;
+    }
+    
+    console.log('Extracted data:', extractedData);
+    
+    // Disable button to prevent double-clicking
+    const confirmBtn = document.getElementById('confirm-btn');
+    confirmBtn.disabled = true;
+    confirmBtn.innerHTML = `
+        <div class="loading loading-spinner loading-xs"></div>
+        Processing...
+    `;
+    
+    // Send data to backend to store in STATE
+    const formData = new FormData();
+    formData.append('extracted_data', JSON.stringify(extractedData));
+    formData.append('selected_file', '{{ current_file|escapejs }}');
+    
+    fetch('/core/confirm-extraction/', {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
+        },
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // Show success toast
+            showToast('success', `✅ Extraction saved! ${extractedData.length} items stored successfully.`);
+            console.log('Data stored in STATE:', data);
+            
+            // Automatically proceed to next file
+            setTimeout(() => {
+                htmx.ajax('POST', '/core/next-file/', {
+                    headers: {
+                        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
+                    },
+                    target: 'body',
+                    swap: 'innerHTML'
+                });
+            }, 500);
+        } else {
+            throw new Error(data.error || 'Failed to confirm extraction');
+        }
+    })
+    .catch(error => {
+        console.error('Error confirming extraction:', error);
+        showToast('error', `Error: ${error.message}`);
+        
+        // Re-enable button
+        confirmBtn.disabled = false;
+        confirmBtn.innerHTML = `
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            Confirm & Next
+        `;
+    });
+}
+
+// Toast notification helper
+function showToast(type, message) {
+    const toast = document.createElement('div');
+    toast.className = 'toast toast-top toast-center';
+    
+    const alertClass = type === 'success' ? 'alert-success' : type === 'error' ? 'alert-error' : 'alert-info';
+    
+    toast.innerHTML = `
+        <div class="alert ${alertClass}">
+            <span>${message}</span>
+        </div>
+    `;
+    
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 5000);
+}
+</script> 

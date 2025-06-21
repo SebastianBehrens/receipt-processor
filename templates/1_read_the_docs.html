@@ -1,0 +1,127 @@
+<!-- Read The Docs Template -->
+<div class="card-body">
+    <div class="max-w-4xl mx-auto">
+        <h2 class="text-2xl font-bold text-base-content mb-6">How Receipt Processing Works</h2>
+        
+        <!-- Process Steps -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+            <!-- Step 1: Upload -->
+            <div class="card bg-base-300">
+                <div class="card-body">
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="badge badge-primary">1</div>
+                        <h4 class="font-semibold text-base-content">Upload Receipts</h4>
+                    </div>
+                    <p class="text-sm text-base-content/70">
+                        Simply upload your receipt images as a ZIP file. 
+                        Common formats like JPG, PNG are supported.
+                    </p>
+                </div>
+            </div>
+            
+            <!-- Step 2: Extract -->
+            <div class="card bg-base-300">
+                <div class="card-body">
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="badge badge-primary">2</div>
+                        <h4 class="font-semibold text-base-content">Extract Data</h4>
+                    </div>
+                    <p class="text-sm text-base-content/70">
+                        With the use of AI the receipts are scanned to extract purchased items 
+                        and their prices from your receipts.
+                    </p>
+                </div>
+            </div>
+            
+            <!-- Step 3: Sort -->
+            <div class="card bg-base-300">
+                <div class="card-body">
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="badge badge-primary">3</div>
+                        <h4 class="font-semibold text-base-content">Sort & Assign</h4>
+                    </div>
+                    <p class="text-sm text-base-content/70">
+                        Manually assign each item to indicate who consumed it - 
+                        because someone needs to take responsibility for that expensive cheese.
+                    </p>
+                </div>
+            </div>
+            
+            <!-- Step 4: Aggregate -->
+            <div class="card bg-base-300">
+                <div class="card-body">
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="badge badge-primary">4</div>
+                        <h4 class="font-semibold text-base-content">Calculate & Report</h4>
+                    </div>
+                    <p class="text-sm text-base-content/70">
+                        View total consumption amounts, calculate transfer payments between people, 
+                        and see the total API costs for the processing.
+                    </p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Features Section -->
+        <div class="card bg-base-300 mb-6">
+            <div class="card-body">
+                <h3 class="card-title text-lg mb-4">Key Features (aka Why This Exists)</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="flex items-start gap-3">
+                        <span class="material-symbols-rounded text-primary text-xl">auto_awesome</span>
+                        <div>
+                            <h4 class="font-semibold text-base-content">AI-Powered Extraction</h4>
+                            <p class="text-sm text-base-content/60">Because manually typing receipts is for losers</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-3">
+                        <span class="material-symbols-rounded text-primary text-xl">speed</span>
+                        <div>
+                            <h4 class="font-semibold text-base-content">Real-time Processing</h4>
+                            <p class="text-sm text-base-content/60">Instant results (when the AI feels like cooperating)</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-3">
+                        <span class="material-symbols-rounded text-primary text-xl">favorite</span>
+                        <div>
+                            <h4 class="font-semibold text-base-content">Relationship Saver</h4>
+                            <p class="text-sm text-base-content/60">No more arguing about who ate more groceries</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-3">
+                        <span class="material-symbols-rounded text-primary text-xl">savings</span>
+                        <div>
+                            <h4 class="font-semibold text-base-content">Expense Transparency</h4>
+                            <p class="text-sm text-base-content/60">Finally know who's been buying all the expensive cheese</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Proceed Button -->
+        <div class="text-center">
+            <button class="btn btn-primary btn-lg"
+                    hx-post="/core/step/2/"
+                    hx-target="body"
+                    hx-swap="innerHTML"
+                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                <span class="material-symbols-rounded text-xl">arrow_forward</span>
+                Proceed
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+function updateSteps(stepNumber) {
+    // Update the steps in the sidebar
+    const steps = document.querySelectorAll('.step');
+    steps.forEach((step, index) => {
+        step.classList.remove('step-primary');
+        if (index === stepNumber) {
+            step.classList.add('step-primary');
+        }
+    });
+}
+</script> 

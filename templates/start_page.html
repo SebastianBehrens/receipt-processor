@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+
+{% block title %}HTMX Receipt Processor - Start{% endblock %}
+
+{% block content %}
+<!-- Success Toast (shown when upload succeeds) -->
+{% if show_success_toast %}
+<div class="toast toast-top toast-center">
+    <div class="alert alert-success">
+        <span>ZIP file uploaded successfully!</span>
+    </div>
+</div>
+<script>
+    setTimeout(() => {
+        const toast = document.getElementById('success-toast');
+        if (toast) toast.remove();
+    }, 5000);
+</script>
+{% endif %}
+
+<!-- Navbar -->
+<div class="navbar bg-base-100 mb-4 lg:mb-6">
+    <div class="navbar-start">
+        <a href="/" class="btn btn-ghost text-xl font-bold text-primary hover:text-primary-focus">
+            <span class="mr-2">🧾</span>
+            <span class="hidden sm:inline">Receipt Processor</span>
+            <span class="sm:hidden">Receipts</span>
+        </a>
+    </div>
+    <div class="navbar-end gap-2">
+        <!-- Restart Button -->
+        <button class="btn btn-ghost btn-sm" title="Restart Process"
+                hx-post="/core/restart/"
+                hx-target="body"
+                hx-swap="innerHTML"
+                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+            <span class="material-symbols-rounded text-xl">restart_alt</span>
+        </button>
+        
+        <button class="btn btn-ghost btn-sm" title="Toggle Dark Mode" id="theme-toggle" 
+                hx-on:click="toggleDarkMode()">
+            <span class="material-symbols-rounded text-xl" id="theme-icon">dark_mode</span>
+        </button>
+        
+        <div class="badge badge-neutral hidden sm:inline-flex">v1.0.0</div>
+        
+        <!-- User Section -->
+        <div class="flex items-center gap-2">
+            <div class="avatar placeholder">
+                <div class="bg-primary text-primary-content rounded-full w-8">
+                    <span class="text-xs">U</span>
+                </div>
+            </div>
+            <span class="text-sm text-base-content hidden sm:inline">User</span>
+        </div>
+    </div>
+</div>
+
+{% if current_step == 2 and extracted_files %}
+<!-- Full-width layout for extraction step -->
+<div class="min-h-[500px] lg:min-h-[600px]">
+    <!-- Horizontal Progress Steps -->
+    <div class="card bg-base-200 shadow-sm mb-4 lg:mb-6">
+        <div class="card-body py-3 lg:py-4">
+            <ul class="steps w-full">
+                <li class="step {% if current_step == 0 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Read Docs</span>
+                    <span class="sm:hidden">Docs</span>
+                </li>
+                <li class="step {% if current_step == 1 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Upload</span>
+                    <span class="sm:hidden">Upload</span>
+                </li>
+                <li class="step {% if current_step == 2 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Extract</span>
+                    <span class="sm:hidden">Extract</span>
+                </li>
+                <li class="step {% if current_step == 3 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Sort</span>
+                    <span class="sm:hidden">Sort</span>
+                </li>
+                <li class="step {% if current_step == 4 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Aggregate</span>
+                    <span class="sm:hidden">Results</span>
+                </li>
+            </ul>
+        </div>
+    </div>
+    
+    <!-- Main Content Area -->
+    <div id="main-content" class="card bg-base-200 shadow-sm">
+        {% include "3_extract_receipts.html" with current_file=state.current_file total_files=state.extracted_files|length files_processed=state.files_processed progress_percentage=state.progress_percentage %}
+    </div>
+</div>
+{% else %}
+<!-- Full-width layout (for all other steps) -->
+<div class="min-h-[500px] lg:min-h-[600px]">
+    <!-- Horizontal Progress Steps -->
+    <div class="card bg-base-200 shadow-sm mb-4 lg:mb-6">
+        <div class="card-body py-3 lg:py-4">
+            <ul class="steps w-full">
+                <li class="step {% if current_step == 0 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Read Docs</span>
+                    <span class="sm:hidden">Docs</span>
+                </li>
+                <li class="step {% if current_step == 1 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Upload</span>
+                    <span class="sm:hidden">Upload</span>
+                </li>
+                <li class="step {% if current_step == 2 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Extract</span>
+                    <span class="sm:hidden">Extract</span>
+                </li>
+                <li class="step {% if current_step == 3 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Sort</span>
+                    <span class="sm:hidden">Sort</span>
+                </li>
+                <li class="step {% if current_step == 4 %}step-primary{% endif %}">
+                    <span class="hidden sm:inline">Aggregate</span>
+                    <span class="sm:hidden">Results</span>
+                </li>
+            </ul>
+        </div>
+    </div>
+    
+    <!-- Main Content Area -->
+    <div id="main-content" class="card bg-base-200 shadow-sm">
+        <!-- Content will be loaded here via HTMX -->
+        {% if current_step == 0 %}
+            {% include "1_read_the_docs.html" %}
+        {% elif current_step == 1 %}
+            {% include "2_upload_receipts.html" %}
+        {% elif current_step == 2 %}
+            {% include "3_extract_receipts.html" with current_file=state.current_file total_files=state.extracted_files|length files_processed=state.files_processed progress_percentage=state.progress_percentage %}
+        {% elif current_step == 3 %}
+            {% include "4_sort.html" with state=state %}
+        {% elif current_step == 4 %}
+            {% include "5_aggregate.html" with state=state %}
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<script>
+// Initialize theme on page load
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM loaded, initializing theme...');
+    initializeTheme();
+});
+
+function initializeTheme() {
+    console.log('Initializing theme...');
+    // Get saved theme from localStorage or default to light
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    const htmlElement = document.documentElement;
+    const themeIcon = document.getElementById('theme-icon');
+    
+    console.log('Current saved theme:', savedTheme);
+    console.log('Theme icon element:', themeIcon);
+    
+    // Apply the theme
+    htmlElement.setAttribute('data-theme', savedTheme);
+    
+    // Update icon based on current theme
+    if (savedTheme === 'light') {
+        if (themeIcon) themeIcon.textContent = 'light_mode';
+    } else {
+        if (themeIcon) themeIcon.textContent = 'dark_mode';
+    }
+    
+    console.log('Theme initialized to:', savedTheme);
+}
+
+function toggleDarkMode() {
+    console.log('toggleDarkMode called!');
+    
+    const htmlElement = document.documentElement;
+    const themeIcon = document.getElementById('theme-icon');
+    const currentTheme = htmlElement.getAttribute('data-theme') || 'light';
+    
+    console.log('Current theme:', currentTheme);
+    console.log('Theme icon element:', themeIcon);
+    
+    // Toggle theme
+    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+    console.log('Switching to theme:', newTheme);
+    
+    // Apply new theme
+    htmlElement.setAttribute('data-theme', newTheme);
+    
+    // Save to localStorage
+    localStorage.setItem('theme', newTheme);
+    console.log('Saved theme to localStorage:', newTheme);
+    
+    // Update icon
+    if (newTheme === 'dark') {
+        if (themeIcon) themeIcon.textContent = 'light_mode';
+    } else {
+        if (themeIcon) themeIcon.textContent = 'dark_mode';
+    }
+    
+    // Add a subtle animation effect
+    const button = document.getElementById('theme-toggle');
+    if (button) {
+        button.classList.add('animate-pulse');
+        setTimeout(() => {
+            button.classList.remove('animate-pulse');
+        }, 200);
+    }
+    
+    console.log('Theme toggle complete. New theme:', newTheme);
+    
+    // Force a visual change to test if anything is working
+    document.body.style.transition = 'background-color 0.3s ease';
+}
+
+// Handle completion trigger from backend
+document.addEventListener('htmx:afterRequest', function(e) {
+    if (e.detail.xhr.getResponseHeader('HX-Trigger') === 'sortingComplete') {
+        // Update the horizontal progress bar to show aggregate step as active
+        const steps = document.querySelectorAll('.step');
+        steps.forEach((step, index) => {
+            step.classList.remove('step-primary');
+            if (index === 4) { // Aggregate step (0-based index)
+                step.classList.add('step-primary');
+            }
+        });
+    }
+});
+</script>
+{% endblock %} 

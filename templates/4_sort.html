@@ -1,0 +1,195 @@
+<!-- Sort Template -->
+<div class="card-body h-full flex flex-col">
+    <!-- Progress indicator -->
+    <div class="text-center mb-6">
+        <h2 class="text-2xl font-bold text-base-content mb-2">Sort Items</h2>
+        <p class="text-base-content/60 mb-4">Assign each item to the correct person</p>
+    </div>
+
+    <!-- Current item display (top 25% of main area, 40% width) -->
+    <div class="flex-1 flex flex-col justify-start items-center">
+        <!-- Progress bar -->
+        <div class="w-2/5 mb-4">
+            <progress id="sorting-progress" class="progress progress-primary w-full" value="0" max="100"></progress>
+            <div class="text-center mt-2">
+                <span class="text-sm text-base-content/60">
+                    Item <span id="current-item-number">0</span> of <span id="total-items-number">0</span>
+                </span>
+            </div>
+        </div>
+        
+        <div class="w-2/5 mb-8">
+            <div id="current-item-display" class="card bg-base-300 border-2 border-primary/20 p-8 text-center"
+                 hx-get="/core/get-current-item/"
+                 hx-trigger="load"
+                 hx-target="this"
+                 hx-swap="innerHTML">
+                <div class="loading loading-spinner loading-lg mx-auto"></div>
+                <p class="text-base-content/60 mt-4">Loading item...</p>
+            </div>
+        </div>
+
+        <!-- Assignment buttons -->
+        <div id="assignment-buttons" class="flex flex-col sm:flex-row gap-4 justify-center items-center">
+            <button id="sebastian-btn" class="btn btn-primary btn-lg min-w-32" 
+                    hx-post="/core/assign-item/"
+                    hx-vals='{"assignee": "sebastian"}'
+                    hx-target="#main-content"
+                    hx-swap="innerHTML"
+                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                    disabled>
+                <span class="material-symbols-rounded text-xl">person</span>
+                Sebastian
+            </button>
+            
+            <button id="both-btn" class="btn btn-accent btn-lg min-w-32"
+                    hx-post="/core/assign-item/"
+                    hx-vals='{"assignee": "both"}'
+                    hx-target="#main-content"
+                    hx-swap="innerHTML"
+                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                    disabled>
+                <span class="material-symbols-rounded text-xl">group</span>
+                50/50
+            </button>
+            
+            <button id="iva-btn" class="btn btn-secondary btn-lg min-w-32"
+                    hx-post="/core/assign-item/"
+                    hx-vals='{"assignee": "iva"}'
+                    hx-target="#main-content"
+                    hx-swap="innerHTML"
+                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                    disabled>
+                <span class="material-symbols-rounded text-xl">person</span>
+                Iva
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+// Initialize sorting when page loads
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('Sort page loaded, initializing...');
+    initializeSorting();
+});
+
+function initializeSorting() {
+    // Check if we need to start sorting or just load current item
+    // Use a simpler approach to check state
+    loadCurrentItem();
+}
+
+function loadCurrentItem() {
+    fetch('/core/get-current-item/', {
+        method: 'GET',
+        headers: {
+            'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.done) {
+            // All items sorted
+            showCompletionMessage(data.message);
+        } else {
+            // Show current item
+            displayCurrentItem(data);
+            enableButtons();
+        }
+    })
+    .catch(error => {
+        console.error('Error loading current item:', error);
+        showError('Failed to load current item');
+    });
+}
+
+function displayCurrentItem(itemData) {
+    const display = document.getElementById('current-item-display');
+    const progress = document.getElementById('progress-info');
+    
+    display.innerHTML = `
+        <div class="space-y-4">
+            <h3 class="text-xl font-bold text-base-content">${escapeHtml(itemData.item)}</h3>
+            <p class="text-2xl font-mono text-primary">$${itemData.price}</p>
+            <p class="text-sm text-base-content/60">From: ${escapeHtml(itemData.source_file)}</p>
+        </div>
+    `;
+    
+    progress.textContent = `Item ${itemData.current_index} of ${itemData.total_items}`;
+}
+
+function showCompletionMessage(message) {
+    const display = document.getElementById('current-item-display');
+    const progress = document.getElementById('progress-info');
+    const buttons = document.getElementById('assignment-buttons');
+    
+    display.innerHTML = `
+        <div class="space-y-4">
+            <span class="material-symbols-rounded text-6xl text-success">check_circle</span>
+            <h3 class="text-xl font-bold text-base-content">${escapeHtml(message)}</h3>
+            <p class="text-base-content/60">Ready to proceed to aggregation</p>
+        </div>
+    `;
+    
+    progress.textContent = 'All items sorted!';
+    
+    // Replace buttons with proceed button
+    buttons.innerHTML = `
+        <button class="btn btn-primary btn-lg"
+                hx-post="/core/step/5/"
+                hx-target="body"
+                hx-swap="innerHTML"
+                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+            <span class="material-symbols-rounded text-xl">arrow_forward</span>
+            Proceed to Aggregation
+        </button>
+    `;
+}
+
+function enableButtons() {
+    document.getElementById('sebastian-btn').disabled = false;
+    document.getElementById('iva-btn').disabled = false;
+    document.getElementById('both-btn').disabled = false;
+}
+
+function showError(message) {
+    const display = document.getElementById('current-item-display');
+    display.innerHTML = `
+        <div class="space-y-4">
+            <span class="material-symbols-rounded text-6xl text-error">error</span>
+            <h3 class="text-xl font-bold text-error">${escapeHtml(message)}</h3>
+        </div>
+    `;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Handle successful item assignment
+document.addEventListener('htmx:afterRequest', function(e) {
+    if (e.target.id && e.target.id.endsWith('-btn')) {
+        if (e.detail.xhr.status === 200) {
+            // Item assigned successfully, the page should reload with next item
+            console.log('Item assigned successfully');
+        }
+    }
+});
+
+// Handle completion trigger from backend
+document.addEventListener('htmx:afterRequest', function(e) {
+    if (e.detail.xhr.getResponseHeader('HX-Trigger') === 'sortingComplete') {
+        // Update the sidebar to show aggregate step as active
+        const steps = document.querySelectorAll('.step');
+        steps.forEach((step, index) => {
+            step.classList.remove('step-primary');
+            if (index === 4) { // Aggregate step (0-based index)
+                step.classList.add('step-primary');
+            }
+        });
+    }
+});
+</script> 

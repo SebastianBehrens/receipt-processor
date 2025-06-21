@@ -1,0 +1,103 @@
+<!-- Aggregate Template -->
+<div class="card-body">
+    <div class="flex justify-center items-center h-full">
+        <div class="text-center w-[85%]">
+            <h2 class="text-2xl font-bold text-base-content mb-6">Spending Summary</h2>
+            <p class="text-base-content/60 mb-8">Your receipt processing is complete. Here's the breakdown:</p>
+            
+            {% if state.aggregation %}
+            <!-- Individual Spending -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div class="card bg-base-300 border-2 border-primary/20">
+                    <div class="card-body text-center">
+                        <span class="material-symbols-rounded text-4xl text-primary mb-3">person</span>
+                        <h3 class="text-lg font-bold text-base-content">Sebastian</h3>
+                        <p class="text-2xl font-mono text-primary">CHF {{ state.aggregation.sebastian_total|floatformat:2|default:"0.00" }}</p>
+                        <p class="text-sm text-base-content/60">Personal expenses</p>
+                    </div>
+                </div>
+                
+                <div class="card bg-base-300 border-2 border-accent/20">
+                    <div class="card-body text-center">
+                        <span class="material-symbols-rounded text-4xl text-accent mb-3">group</span>
+                        <h3 class="text-lg font-bold text-base-content">Shared (50/50)</h3>
+                        <p class="text-2xl font-mono text-accent">CHF {{ state.aggregation.both_total|floatformat:2|default:"0.00" }}</p>
+                        <p class="text-sm text-base-content/60">Split expenses</p>
+                    </div>
+                </div>
+                
+                <div class="card bg-base-300 border-2 border-secondary/20">
+                    <div class="card-body text-center">
+                        <span class="material-symbols-rounded text-4xl text-secondary mb-3">person</span>
+                        <h3 class="text-lg font-bold text-base-content">Iva</h3>
+                        <p class="text-2xl font-mono text-secondary">CHF {{ state.aggregation.iva_total|floatformat:2|default:"0.00" }}</p>
+                        <p class="text-sm text-base-content/60">Personal expenses</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transfer Payment -->
+            <div class="card bg-gradient-to-r from-primary/10 to-secondary/10 border-2 border-primary/30 mb-8">
+                <div class="card-body text-center">
+                    <h3 class="text-xl font-bold text-base-content mb-4">Transfer Payment</h3>
+                    <div class="flex flex-col items-center space-y-4">
+                        <div class="text-sm text-base-content/60">
+                            Since <strong>{{ state.aggregation.payer|default:"Unknown" }}</strong> paid for everything:
+                        </div>
+                        <div class="text-3xl font-mono font-bold text-primary">
+                            CHF {{ state.aggregation.transfer_amount|floatformat:2|default:"0.00" }}
+                        </div>
+                        <div class="text-lg text-base-content">
+                            {{ state.aggregation.transfer_direction|default:"No transfer calculated" }}
+                        </div>
+                        <div class="text-xs text-base-content/50">
+                            (Personal expenses + half of shared expenses)
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Grand Total -->
+            <div class="card bg-base-300 mb-8">
+                <div class="card-body text-center">
+                    <h3 class="text-lg font-bold text-base-content mb-2">Total Receipts Processed</h3>
+                    <p class="text-3xl font-mono font-bold text-success">CHF {{ state.aggregation.grand_total|floatformat:2|default:"0.00" }}</p>
+                    <p class="text-sm text-base-content/60">All expenses combined</p>
+                </div>
+            </div>
+            
+            <!-- API Costs -->
+            <div class="card bg-base-200 mb-8">
+                <div class="card-body text-center">
+                    <h3 class="text-lg font-bold text-base-content mb-2">Total API Costs</h3>
+                    <p class="text-2xl font-mono font-bold text-warning">CHF {{ state.api_costs_total|floatformat:4|default:"0.0000" }}</p>
+                    <p class="text-sm text-base-content/60">AI processing costs</p>
+                </div>
+            </div>
+            
+            {% else %}
+            <!-- Debug: Show when no aggregation data -->
+            <div class="card bg-base-300 mb-8">
+                <div class="card-body text-center">
+                    <h3 class="text-lg font-bold text-error mb-2">Debug: No Aggregation Data</h3>
+                    <p class="text-sm text-base-content/60">STATE: {{ state|default:"No state data" }}</p>
+                    <p class="text-sm text-base-content/60">Consumption: {{ state.consumption|default:"No consumption data" }}</p>
+                    <p class="text-sm text-base-content/60">Payer: {{ state.payer|default:"No payer data" }}</p>
+                </div>
+            </div>
+            {% endif %}
+            
+            <!-- Action Buttons -->
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <button class="btn btn-outline btn-lg"
+                        hx-post="/core/restart/"
+                        hx-target="body"
+                        hx-swap="innerHTML"
+                        hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                    <span class="material-symbols-rounded text-xl">refresh</span>
+                    Process New Receipts
+                </button>
+            </div>
+        </div>
+    </div>
+</div> 
