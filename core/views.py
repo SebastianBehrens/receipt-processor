@@ -11,7 +11,7 @@ import logging
 import traceback
 import urllib.parse
 from decimal import Decimal
-from django.shortcuts import render, get_object_or_404
+from django.shortcuts import render, get_object_or_404, redirect
 from django.http import HttpResponse, FileResponse, JsonResponse
 from django.conf import settings
 from django.views.decorators.http import require_GET, require_POST
@@ -137,6 +137,7 @@ def start_page(request):
         'extracted_files': list(unprocessed_files.values_list('filename', flat=True)),
         'session': session,
         'current_file': current_file_info['current_file'],
+        'authelia_app_url': settings.AUTHELIA_APP_URL,
         'state': {
             'current_step': session.current_step,
             'receipt_zip': session.receipt_zip_filename,
@@ -1709,3 +1710,28 @@ def next_extraction_content(request):
     except Exception as e:
         logger.error(f"Failed to get next extraction content: {str(e)}")
         return HttpResponse(f'<div class="alert alert-error">Failed to advance: {str(e)}</div>', status=500)
+
+@login_required
+@require_GET
+def authelia_logout(request):
+    """Logout from Django and redirect to Authelia logout."""
+    from django.contrib.auth import logout
+    from django.shortcuts import redirect
+    from django.conf import settings
+    
+    logout(request)
+    authelia_logout_url = getattr(settings, 'AUTHELIA_LOGOUT_URL', '/accounts/login/')
+    return redirect(authelia_logout_url)
+
+@require_GET
+def custom_login(request):
+    """Custom login view that provides Authelia context."""
+    # If user is already authenticated, redirect to home
+    if request.user.is_authenticated:
+        return redirect('/')
+    
+    context = {
+        'authelia_app_url': settings.AUTHELIA_APP_URL,
+    }
+    
+    return render(request, 'registration/login.html', context)

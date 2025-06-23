@@ -23,4 +23,5 @@ urlpatterns = [
     path('next-file-in-queue/', views.next_file_in_queue, name='next_file_in_queue'),
     path('next-extraction-content/', views.next_extraction_content, name='next_extraction_content'),
     path('progress-update/', views.get_progress_update, name='get_progress_update'),
+    path('logout/', views.authelia_logout, name='authelia_logout'),
 ] 

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Django Admin Login - Receipt Processor{% endblock %}
+
+{% block content %}
+<div class="hero min-h-screen">
+    <div class="hero-content flex-col lg:flex-row-reverse">
+        <div class="text-center lg:text-left lg:ml-8">
+            <h1 class="text-5xl font-bold">🔐 Admin Access</h1>
+            <p class="py-6">Django administrative login for system administrators. Regular users should use the Authelia login.</p>
+        </div>
+        <div class="card shrink-0 w-full max-w-sm shadow-2xl bg-base-100">
+            <form class="card-body" method="post">
+                {% csrf_token %}
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text">Username</span>
+                    </label>
+                    <input type="text" name="username" placeholder="Enter your username" class="input input-bordered" required value="{{ form.username.value|default:'' }}">
+                    {% if form.username.errors %}
+                        <div class="label">
+                            <span class="label-text-alt text-error">{{ form.username.errors.0 }}</span>
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text">Password</span>
+                    </label>
+                    <input type="password" name="password" placeholder="Enter your password" class="input input-bordered" required>
+                    {% if form.password.errors %}
+                        <div class="label">
+                            <span class="label-text-alt text-error">{{ form.password.errors.0 }}</span>
+                        </div>
+                    {% endif %}
+                </div>
+                
+                {% if form.non_field_errors %}
+                    <div class="alert alert-error">
+                        <span class="material-symbols-rounded">error</span>
+                        <span>{{ form.non_field_errors.0 }}</span>
+                    </div>
+                {% endif %}
+                
+                <div class="form-control mt-6">
+                    <button class="btn btn-primary">
+                        <span class="material-symbols-rounded">login</span>
+                        Login
+                    </button>
+                </div>
+                
+                <div class="divider">Regular User?</div>
+                
+                <div class="text-center">
+                    <p class="text-sm text-base-content/70">
+                        Regular users should access this application through Authelia authentication.
+                    </p>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %} 

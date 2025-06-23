@@ -7,73 +7,62 @@
     <div class="hero-content flex-col lg:flex-row-reverse">
         <div class="text-center lg:text-left lg:ml-8">
             <h1 class="text-5xl font-bold">🧾 Receipt Processor</h1>
-            <p class="py-6">Process your receipts with AI-powered extraction and smart categorization. Upload ZIP files, extract items automatically, and split expenses between Sebastian and Iva.</p>
+            <p class="py-6">
+                Welcome to the Receipt Processor application. Choose your preferred login method
+                to access the application.
+            </p>
             <div class="stats shadow">
                 <div class="stat">
                     <div class="stat-figure text-primary">
-                        <span class="material-symbols-rounded text-2xl">smart_toy</span>
+                        <span class="material-symbols-rounded text-2xl">security</span>
                     </div>
-                    <div class="stat-title">AI Powered</div>
-                    <div class="stat-value text-primary">GPT-4</div>
-                    <div class="stat-desc">Accurate extraction</div>
-                </div>
-                
-                <div class="stat">
-                    <div class="stat-figure text-secondary">
-                        <span class="material-symbols-rounded text-2xl">speed</span>
-                    </div>
-                    <div class="stat-title">Fast</div>
-                    <div class="stat-value text-secondary">Automated</div>
-                    <div class="stat-desc">↗︎ 90% faster</div>
+                    <div class="stat-title">Authentication</div>
+                    <div class="stat-value text-primary">Authelia</div>
+                    <div class="stat-desc">Single Sign-On</div>
                 </div>
             </div>
         </div>
         <div class="card shrink-0 w-full max-w-sm shadow-2xl bg-base-100">
-            <form class="card-body" method="post">
-                {% csrf_token %}
-                <div class="form-control">
-                    <label class="label">
-                        <span class="label-text">Username</span>
-                    </label>
-                    <input type="text" name="username" placeholder="Enter your username" class="input input-bordered" required value="{{ form.username.value|default:'' }}">
-                    {% if form.username.errors %}
-                        <div class="label">
-                            <span class="label-text-alt text-error">{{ form.username.errors.0 }}</span>
-                        </div>
-                    {% endif %}
-                </div>
-                <div class="form-control">
-                    <label class="label">
-                        <span class="label-text">Password</span>
-                    </label>
-                    <input type="password" name="password" placeholder="Enter your password" class="input input-bordered" required>
-                    {% if form.password.errors %}
-                        <div class="label">
-                            <span class="label-text-alt text-error">{{ form.password.errors.0 }}</span>
-                        </div>
-                    {% endif %}
-                </div>
+            <div class="card-body text-center">
+                <h2 class="card-title justify-center mb-4">Access Application</h2>
+                <p class="text-base-content/70 mb-6">
+                    Sign in to access your receipt processing workspace.
+                </p>
                 
-                {% if form.non_field_errors %}
-                    <div class="alert alert-error">
-                        <span class="material-symbols-rounded">error</span>
-                        <span>{{ form.non_field_errors.0 }}</span>
-                    </div>
+                {% if messages %}
+                    {% for message in messages %}
+                        <div class="alert alert-error mb-4">
+                            <span class="material-symbols-rounded">error</span>
+                            <span>{{ message }}</span>
+                        </div>
+                    {% endfor %}
                 {% endif %}
                 
-                <div class="form-control mt-6">
-                    <button class="btn btn-primary">
-                        <span class="material-symbols-rounded">login</span>
-                        Login
-                    </button>
+                <!-- Main Authelia Access Button -->
+                <a href="{{ authelia_app_url }}" class="btn btn-primary btn-lg w-full mb-4">
+                    <span class="material-symbols-rounded">login</span>
+                    Sign in with Authelia
+                </a>
+                
+                <div class="alert alert-info mb-4 text-left">
+                    <span class="material-symbols-rounded text-sm">info</span>
+                    <div class="text-xs">
+                        <p><strong>Authelia Login:</strong> Single sign-on with your organization account</p>
+                        <p class="mt-1">Will redirect to the protected application area</p>
+                    </div>
                 </div>
                 
-                <div class="divider">Need an account?</div>
+                <div class="divider">Administrator Access</div>
                 
-                <div class="text-center">
-                    <p class="text-sm text-base-content/70">Contact your administrator to create an account.</p>
+                <a href="/accounts/login/django/" class="btn btn-outline btn-sm w-full">
+                    <span class="material-symbols-rounded">admin_panel_settings</span>
+                    Django Admin Login
+                </a>
+                
+                <div class="text-xs text-base-content/50 mt-2">
+                    For system administrators only
                 </div>
-            </form>
+            </div>
         </div>
     </div>
 </div>

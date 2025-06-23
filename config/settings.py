@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 import os
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 # Load environment variables from .env file
 load_dotenv(Path(__file__).parent / '.env')
@@ -25,12 +26,39 @@ BASE_DIR = Path(os.getenv('BASE_DIR', Path(__file__).resolve().parent.parent))
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-3=q1151stnn$^q279xibxu2dagbkj7bg4%ae9y&jj#!ricnq=n"
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY environment variable is required")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = []
+# Security settings for SSL-only deployment
+if not DEBUG:
+    # HTTPS/SSL Security
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    
+    # Cookie Security
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    
+    # Additional security headers
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_BROWSER_XSS_FILTER = True
+    X_FRAME_OPTIONS = 'DENY'
+
+# Extract domain from SERVER_ROOT_URL and set ALLOWED_HOSTS
+SERVER_ROOT_URL = os.getenv('SERVER_ROOT_URL')
+if not SERVER_ROOT_URL:
+    raise ValueError("SERVER_ROOT_URL environment variable is required")
+
+# Extract domain from URL (e.g., 'https://receipt-processor.epsian.ch' -> 'receipt-processor.epsian.ch')
+parsed_url = urlparse(SERVER_ROOT_URL)
+domain = parsed_url.netloc
+ALLOWED_HOSTS = [domain, 'localhost', '127.0.0.1']
 
 
 # Application definition
@@ -51,8 +79,15 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "core.auth_middleware.AutheliaRemoteUserMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+]
+
+# Authentication backends
+AUTHENTICATION_BACKENDS = [
+    'core.auth_backends.AutheliaRemoteUserBackend',
+    'django.contrib.auth.backends.ModelBackend',  # Keep for Django admin fallback
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -130,9 +165,23 @@ LOGS_DIR = BASE_DIR / 'logs'
 LOGS_DIR.mkdir(exist_ok=True)
 
 # Authentication settings
-LOGIN_REDIRECT_URL = '/'
+LOGIN_REDIRECT_URL = '/app/'  # Redirect to protected area after login
 LOGOUT_REDIRECT_URL = '/accounts/login/'
 LOGIN_URL = '/accounts/login/'
+
+# Authelia header-based authentication settings
+# Base URL for Authelia (used for logout)
+AUTHELIA_BASE_URL = os.getenv('AUTHELIA_BASE_URL', 'https://auth.epsian.ch')
+
+# Logout from Authelia after logout on the Django application
+AUTHELIA_LOGOUT_URL = os.getenv('AUTHELIA_LOGOUT_URL', f'{AUTHELIA_BASE_URL}/logout')
+
+# URL to access the protected application area through Authelia
+# This should point to the protected route (e.g., /app/) which will trigger Authelia auth
+AUTHELIA_APP_URL = os.getenv('AUTHELIA_APP_URL', f'{SERVER_ROOT_URL}/app/')
+
+# Optional: Groups to exclude when synchronizing user groups from Authelia
+# AUTHELIA_EXCLUDED_GROUPS = ['system', 'internal']
 
 LOGGING = {
     'version': 1,

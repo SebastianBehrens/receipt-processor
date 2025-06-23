@@ -17,11 +17,17 @@ Including another URLconf
 
 from django.contrib import admin
 from django.urls import path, include
-from core.views import start_page
+from django.contrib.auth import views as auth_views
+from core.views import start_page, custom_login
 
 urlpatterns = [
+    # Public routes - accessible without Authelia authentication
     path("admin/", admin.site.urls),
+    path("accounts/login/", custom_login, name="login"),
+    path("accounts/login/django/", auth_views.LoginView.as_view(template_name='registration/django_login.html'), name='django_login'),
     path("accounts/", include("django.contrib.auth.urls")),
-    path("", start_page, name="start_page"),
-    path("core/", include("core.urls")),
+    
+    # Protected routes - these should be protected by Authelia in your proxy config
+    path("app/", start_page, name="start_page"),  # Main application entry point
+    path("app/core/", include("core.urls")),  # All core application routes
 ]
