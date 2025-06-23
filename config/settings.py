@@ -129,6 +129,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGS_DIR = BASE_DIR / 'logs'
 LOGS_DIR.mkdir(exist_ok=True)
 
+# Authentication settings
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = '/accounts/login/'
+LOGIN_URL = '/accounts/login/'
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

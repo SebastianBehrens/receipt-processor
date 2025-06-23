@@ -121,8 +121,8 @@
                         
                         {% if show_next_button %}
                         <button class="btn btn-secondary flex-1 sm:flex-none sm:w-32"
-                                hx-post="/core/next-file/"
-                                hx-target="body"
+                                hx-post="/core/skip-current-file/"
+                                hx-target="#main-content"
                                 hx-swap="innerHTML"
                                 hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -319,12 +319,11 @@ function addNewRow() {
     itemInput.select();
 }
 
-// Confirm extraction and proceed to next file - collect data and store in STATE
+// Confirm extraction and proceed to next file - restored old working approach
 function confirmExtractionAndNext() {
     console.log('confirmExtractionAndNext called');
     
     // Check form validity first using HTML5 validation
-    const form = document.querySelector('#items-tbody').closest('form') || document.createElement('form');
     const inputs = document.querySelectorAll('#items-tbody input.validator');
     let isValid = true;
     
@@ -376,7 +375,7 @@ function confirmExtractionAndNext() {
     
     console.log('Extracted data:', extractedData);
     
-    // Disable button to prevent double-clicking
+    // Show loading state
     const confirmBtn = document.getElementById('confirm-btn');
     confirmBtn.disabled = true;
     confirmBtn.innerHTML = `
@@ -384,7 +383,7 @@ function confirmExtractionAndNext() {
         Processing...
     `;
     
-    // Send data to backend to store in STATE
+    // Send data to backend to store in database (like old version)
     const formData = new FormData();
     formData.append('extracted_data', JSON.stringify(extractedData));
     formData.append('selected_file', '{{ current_file|escapejs }}');
@@ -401,15 +400,15 @@ function confirmExtractionAndNext() {
         if (data.success) {
             // Show success toast
             showToast('success', `✅ Extraction saved! ${extractedData.length} items stored successfully.`);
-            console.log('Data stored in STATE:', data);
+            console.log('Data stored in database:', data);
             
-            // Automatically proceed to next file
+            // Automatically proceed to next file using targeted HTMX
             setTimeout(() => {
-                htmx.ajax('POST', '/core/next-file/', {
+                htmx.ajax('POST', '/core/next-extraction-content/', {
                     headers: {
                         'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
                     },
-                    target: 'body',
+                    target: '#main-content',
                     swap: 'innerHTML'
                 });
             }, 500);

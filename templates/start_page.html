@@ -3,20 +3,34 @@
 {% block title %}HTMX Receipt Processor - Start{% endblock %}
 
 {% block content %}
-<!-- Success Toast (shown when upload succeeds) -->
-{% if show_success_toast %}
-<div class="toast toast-top toast-center">
-    <div class="alert alert-success">
-        <span>ZIP file uploaded successfully!</span>
-    </div>
-</div>
+<!-- HTMX Configuration to prevent page reloads -->
 <script>
-    setTimeout(() => {
-        const toast = document.getElementById('success-toast');
-        if (toast) toast.remove();
-    }, 5000);
+    // Configure HTMX to prevent any accidental page reloads
+    document.addEventListener('DOMContentLoaded', function() {
+        document.body.setAttribute('hx-boost', 'false');
+        
+        // Debug HTMX events to track what's happening
+        document.addEventListener('htmx:beforeRequest', function(e) {
+            console.log('HTMX Before Request:', e.detail);
+            if (e.detail.target.tagName === 'BODY') {
+                console.warn('WARNING: Request targeting BODY element!');
+            }
+        });
+        
+        document.addEventListener('htmx:afterRequest', function(e) {
+            console.log('HTMX After Request:', e.detail);
+        });
+        
+        // Prevent any form submissions from causing page reloads
+        document.addEventListener('submit', function(e) {
+            console.log('Form submit event:', e.target);
+            // Let HTMX handle the form if it has HTMX attributes
+            if (e.target.hasAttribute('hx-post') || e.target.hasAttribute('hx-get')) {
+                e.preventDefault();
+            }
+        });
+    });
 </script>
-{% endif %}
 
 <!-- Navbar -->
 <div class="navbar bg-base-100 mb-4 lg:mb-6">
@@ -28,7 +42,8 @@
         </a>
     </div>
     <div class="navbar-end gap-2">
-        <!-- Restart Button -->
+        <!-- Restart Button (only show if user is authenticated) -->
+        {% if user.is_authenticated %}
         <button class="btn btn-ghost btn-sm" title="Restart Process"
                 hx-post="/core/restart/"
                 hx-target="body"
@@ -36,6 +51,7 @@
                 hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
             <span class="material-symbols-rounded text-xl">restart_alt</span>
         </button>
+        {% endif %}
         
         <button class="btn btn-ghost btn-sm" title="Toggle Dark Mode" id="theme-toggle" 
                 hx-on:click="toggleDarkMode()">
@@ -45,17 +61,62 @@
         <div class="badge badge-neutral hidden sm:inline-flex">v1.0.0</div>
         
         <!-- User Section -->
-        <div class="flex items-center gap-2">
-            <div class="avatar placeholder">
-                <div class="bg-primary text-primary-content rounded-full w-8">
-                    <span class="text-xs">U</span>
+        {% if user.is_authenticated %}
+        <div class="dropdown dropdown-end">
+            <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
+                <div class="flex items-center gap-2">
+                    <div class="avatar placeholder">
+                        <div class="bg-primary text-primary-content rounded-full w-8">
+                            <span class="text-xs">{{ user.username|first|upper }}</span>
+                        </div>
+                    </div>
+                    <span class="text-sm text-base-content hidden sm:inline">{{ user.username }}</span>
                 </div>
             </div>
-            <span class="text-sm text-base-content hidden sm:inline">User</span>
+            <ul tabindex="0" class="dropdown-content z-[999] menu p-2 shadow bg-base-100 rounded-box w-52">
+                <li>
+                    <a href="/admin/" target="_blank">
+                        <span class="material-symbols-rounded">admin_panel_settings</span>
+                        Admin
+                    </a>
+                </li>
+                <li>
+                    <button onclick="document.getElementById('logout-form').submit();">
+                        <span class="material-symbols-rounded">power_settings_new</span>
+                        Logout
+                    </button>
+                </li>
+            </ul>
         </div>
+
+        <form id="logout-form" method="post" action="/accounts/logout/" class="hidden">
+            {% csrf_token %}
+        </form>
+        {% else %}
+        <a href="/accounts/login/" class="btn btn-primary btn-sm">
+            <span class="material-symbols-rounded">login</span>
+            Login
+        </a>
+        {% endif %}
     </div>
 </div>
 
+<!-- Authentication Required Message -->
+{% if not user.is_authenticated %}
+<div class="hero min-h-[400px]">
+    <div class="hero-content text-center">
+        <div class="max-w-md">
+            <h1 class="text-5xl font-bold">🔐</h1>
+            <h1 class="text-3xl font-bold">Authentication Required</h1>
+            <p class="py-6">Please log in to use the Receipt Processor. You need an account to manage your receipt processing sessions.</p>
+            <a href="/accounts/login/" class="btn btn-primary">
+                <span class="material-symbols-rounded">login</span>
+                Login
+            </a>
+        </div>
+    </div>
+</div>
+{% else %}
 {% if current_step == 2 and extracted_files %}
 <!-- Full-width layout for extraction step -->
 <div class="min-h-[500px] lg:min-h-[600px]">
@@ -140,6 +201,7 @@
     </div>
 </div>
 {% endif %}
+{% endif %}
 
 <script>
 // Initialize theme on page load
@@ -222,6 +284,17 @@ document.addEventListener('htmx:afterRequest', function(e) {
         steps.forEach((step, index) => {
             step.classList.remove('step-primary');
             if (index === 4) { // Aggregate step (0-based index)
+                step.classList.add('step-primary');
+            }
+        });
+    }
+    
+    if (e.detail.xhr.getResponseHeader('HX-Trigger') === 'extractionComplete') {
+        // Update the horizontal progress bar to show sort step as active
+        const steps = document.querySelectorAll('.step');
+        steps.forEach((step, index) => {
+            step.classList.remove('step-primary');
+            if (index === 3) { // Sort step (0-based index)
                 step.classList.add('step-primary');
             }
         });

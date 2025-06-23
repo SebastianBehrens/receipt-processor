@@ -9,12 +9,19 @@ import ast
 import json
 import logging
 import traceback
-from django.shortcuts import render
+import urllib.parse
+from decimal import Decimal
+from django.shortcuts import render, get_object_or_404
 from django.http import HttpResponse, FileResponse, JsonResponse
 from django.conf import settings
 from django.views.decorators.http import require_GET, require_POST
+from django.contrib.auth.decorators import login_required
 from django.utils.text import get_valid_filename
+from django.utils import timezone
 from dotenv import load_dotenv
+from .models import ReceiptSession, ExtractedFile, ReceiptItem, SortedItem, SessionAggregation
+import unicodedata
+from urllib.parse import quote
 
 # Load environment variables from config/.env
 load_dotenv(Path(settings.BASE_DIR) / 'config' / '.env')
@@ -22,28 +29,25 @@ load_dotenv(Path(settings.BASE_DIR) / 'config' / '.env')
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Global state to track current step
-STATE = {
-    'current_step': 0,  # 0 = Read docs, 1 = Upload, 2 = Extract, 3 = Sort, 4 = Aggregate
-    'receipt_zip': None,
-    'extracted_files': [],
-    'selected_file': None,
-    'payer': None,  # Store the selected payer
-    'consumption': {
-        'sebastian': [],
-        'iva': [],
-        'both': []
-    },
-    'sort_items': [],  # All items to be sorted
-    'current_sort_index': 0,  # Current item being sorted
-    'api_costs_total': 0,  # Track total API costs
-    'current_extraction_index': 0,
-    'files_processed': 0,
-    'progress_percentage': 0
-}
+def get_or_create_session(user):
+    """Get the user's current active session or create a new one."""
+    # Try to get an incomplete session first
+    session = ReceiptSession.objects.filter(
+        user=user, 
+        is_complete=False
+    ).order_by('-created_at').first()
+    
+    if not session:
+        # Create a new session
+        session = ReceiptSession.objects.create(user=user)
+        logger.info(f"Created new session {session.id} for user {user.username}")
+    else:
+        logger.debug(f"Using existing session {session.id} for user {user.username}")
+    
+    return session
 
-def unzip_receipts(zip_filename):
-    """Extract the uploaded ZIP file and return list of extracted files."""
+def unzip_receipts(session, zip_filename):
+    """Extract the uploaded ZIP file and create ExtractedFile objects."""
     if not zip_filename:
         return []
     
@@ -79,57 +83,195 @@ def unzip_receipts(zip_filename):
                     
                     # Get relative path from extraction directory
                     relative_path = file_path.relative_to(extract_dir)
-                    extracted_files.append(str(relative_path))
+                    
+                    # Create ExtractedFile object
+                    extracted_file, created = ExtractedFile.objects.get_or_create(
+                        session=session,
+                        filename=file_path.name,
+                        defaults={
+                            'relative_path': str(relative_path)
+                        }
+                    )
+                    
+                    if created:
+                        logger.debug(f"Created ExtractedFile: {extracted_file.filename}")
+                    
+                    extracted_files.append(extracted_file)
     
     except Exception as e:
         logger.error(f"Error extracting ZIP file: {e}")
         return []
     
+    logger.info(f"Extracted {len(extracted_files)} files for session {session.id}")
     return extracted_files
 
+def get_current_file_info(session, request):
+    """Get current file information."""
+    current_file = request.session.get('current_file')
+    if current_file:
+        # Look up the ExtractedFile object 
+        extracted_file = session.extracted_files.filter(filename=current_file).first()
+        if extracted_file:
+            return {
+                'current_file': current_file
+            }
+    return {
+        'current_file': None
+    }
+
+@login_required
 @require_GET
 def start_page(request):
     """Render the start page for the HTMX Receipt Processor."""
-    return render(request, 'start_page.html', {
-        'current_step': STATE['current_step'],
-        'extracted_files': STATE.get('extracted_files', []),
-        'state': STATE
-    })
+    session = get_or_create_session(request.user)
+    
+    # Get extracted files that haven't been processed yet
+    unprocessed_files = session.extracted_files.filter(is_processed=False, is_skipped=False)
+    
+    # Get current file information
+    current_file_info = get_current_file_info(session, request)
+    
+    # Create context with session information
+    context = {
+        'current_step': session.current_step,
+        'extracted_files': list(unprocessed_files.values_list('filename', flat=True)),
+        'session': session,
+        'current_file': current_file_info['current_file'],
+        'state': {
+            'current_step': session.current_step,
+            'receipt_zip': session.receipt_zip_filename,
+            'payer': session.payer,
+            'api_costs_total': float(session.api_costs_total),
+            'current_extraction_index': session.current_extraction_index,
+            'files_processed': session.files_processed,
+            'progress_percentage': session.progress_percentage,
+            'current_sort_index': session.current_sort_index,
+            'extracted_files': list(unprocessed_files.values_list('filename', flat=True)),
+            'current_file': current_file_info['current_file'],
+            'current_file_normalized': current_file_info['current_file'],
+            # Get consumption data for sorting/aggregation steps
+            'consumption': get_consumption_data(session) if session.current_step >= 3 else {},
+            'sort_items': get_sort_items(session) if session.current_step == 3 else [],
+            'aggregation': get_aggregation_data(session) if session.current_step == 4 else {},
+        }
+    }
+    
+    return render(request, 'start_page.html', context)
 
+def get_consumption_data(session):
+    """Get consumption data organized by assignee for templates."""
+    consumption = {'sebastian': [], 'iva': [], 'both': []}
+    
+    for sorted_item in session.sorted_items.select_related('receipt_item', 'receipt_item__source_file'):
+        item_data = {
+            'item': sorted_item.receipt_item.item_name,
+            'price': str(sorted_item.receipt_item.price),
+            'source_file': sorted_item.receipt_item.source_file.filename
+        }
+        consumption[sorted_item.assignee].append(item_data)
+    
+    return consumption
+
+def get_sort_items(session):
+    """Get items that need to be sorted."""
+    # Get all confirmed receipt items that haven't been sorted yet
+    unsorted_items = session.receipt_items.filter(
+        is_confirmed=True,
+        sorted_assignment__isnull=True
+    ).select_related('source_file')
+    
+    sort_items = []
+    for item in unsorted_items:
+        sort_items.append({
+            'item': item.item_name,
+            'price': float(item.price),
+            'source_file': item.source_file.filename,
+            'id': item.id
+        })
+    
+    return sort_items
+
+def get_aggregation_data(session):
+    """Get aggregation data for the session."""
+    try:
+        aggregation = session.aggregation
+        return {
+            'sebastian_total': float(aggregation.sebastian_total),
+            'iva_total': float(aggregation.iva_total),
+            'both_total': float(aggregation.both_total),
+            'grand_total': float(aggregation.grand_total),
+            'transfer_amount': float(aggregation.transfer_amount),
+            'transfer_direction': aggregation.transfer_direction,
+            'payer': session.payer
+        }
+    except SessionAggregation.DoesNotExist:
+        return {}
+
+@login_required
 @require_POST
 def step_view(request, step_number):
     """Main view to handle different steps of the receipt processing workflow."""
     logger.info(f"Step view requested: {step_number}")
     
+    session = get_or_create_session(request.user)
+    
     # Update current step (convert to 0-based index for internal use)
-    STATE['current_step'] = step_number - 1
+    session.current_step = step_number - 1
+    session.save()
     
     # If moving to aggregation step (step 5 = index 4), calculate aggregation
     if step_number == 5:
-        calculate_aggregation()
+        calculate_aggregation(session)
     
     # Calculate progress information for extraction step
-    if step_number == 3 and STATE.get('extracted_files'):  # Step 3 is extraction (0-based index 2)
-        current_index = STATE.get('current_extraction_index', 0)
-        total_files = len(STATE['extracted_files'])
-        files_processed = current_index
+    if step_number == 3 and session.extracted_files.exists():  # Step 3 is extraction (0-based index 2)
+        unprocessed_files = session.extracted_files.filter(is_processed=False, is_skipped=False)
+        total_files = session.extracted_files.count()
+        files_processed = session.current_extraction_index
         progress_percentage = int((files_processed / total_files) * 100) if total_files > 0 else 0
         
-        STATE['files_processed'] = files_processed
-        STATE['progress_percentage'] = progress_percentage
+        session.files_processed = files_processed
+        session.progress_percentage = progress_percentage
+        session.save()
         
         logger.debug(f"Extraction progress: {files_processed}/{total_files} ({progress_percentage}%)")
     
+    # Get extracted files that haven't been processed yet
+    unprocessed_files = session.extracted_files.filter(is_processed=False, is_skipped=False)
+    
+    # Get current file information
+    current_file_info = get_current_file_info(session, request)
+    
     # Create context with state information
     context = {
-        'current_step': STATE['current_step'],
-        'extracted_files': STATE.get('extracted_files', []),
-        'state': STATE
+        'current_step': session.current_step,
+        'extracted_files': list(unprocessed_files.values_list('filename', flat=True)),
+        'session': session,
+        'current_file': current_file_info['current_file'],
+        'current_file_normalized': current_file_info['current_file'],
+        'state': {
+            'current_step': session.current_step,
+            'receipt_zip': session.receipt_zip_filename,
+            'payer': session.payer,
+            'api_costs_total': float(session.api_costs_total),
+            'current_extraction_index': session.current_extraction_index,
+            'files_processed': session.files_processed,
+            'progress_percentage': session.progress_percentage,
+            'current_sort_index': session.current_sort_index,
+            'extracted_files': list(unprocessed_files.values_list('filename', flat=True)),
+            'current_file': current_file_info['current_file'],
+            'current_file_normalized': current_file_info['current_file'],
+            # Get consumption data for sorting/aggregation steps
+            'consumption': get_consumption_data(session) if session.current_step >= 3 else {},
+            'sort_items': get_sort_items(session) if session.current_step == 3 else [],
+            'aggregation': get_aggregation_data(session) if session.current_step == 4 else {},
+        }
     }
     
     logger.debug(f"Rendering step {step_number} with context keys: {list(context.keys())}")
     return render(request, 'start_page.html', context)
 
+@login_required
 @require_POST
 def upload_files(request):
     """Handle file upload and return toast notification."""
@@ -186,23 +328,38 @@ def upload_files(request):
             for chunk in uploaded_file.chunks():
                 destination.write(chunk)
         
-        # Store filename and payer in state
-        STATE['receipt_zip'] = filename
-        STATE['payer'] = payer
+        # Get or create session and store filename and payer
+        session = get_or_create_session(request.user)
+        session.receipt_zip_filename = filename
+        session.payer = payer
+        session.current_step = 2  # Move to Extract step
+        session.save()
         
         # Extract the ZIP file and get list of files
-        extracted_files = unzip_receipts(filename)
-        STATE['extracted_files'] = extracted_files
+        extracted_files = unzip_receipts(session, filename)
         
-        # Advance to next step
-        STATE['current_step'] = 2  # Move to Extract step
+        # Get unprocessed files for context
+        unprocessed_files = session.extracted_files.filter(is_processed=False, is_skipped=False)
         
         # Return the full page with updated state and success toast
         return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
-            'show_success_toast': True,
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
+            'current_step': session.current_step,
+            'extracted_files': list(unprocessed_files.values_list('filename', flat=True)),
+            'session': session,
+            'state': {
+                'current_step': session.current_step,
+                'receipt_zip': session.receipt_zip_filename,
+                'payer': session.payer,
+                'api_costs_total': float(session.api_costs_total),
+                'current_extraction_index': session.current_extraction_index,
+                'files_processed': session.files_processed,
+                'progress_percentage': session.progress_percentage,
+                'current_sort_index': session.current_sort_index,
+                'extracted_files': list(unprocessed_files.values_list('filename', flat=True)),
+                'consumption': get_consumption_data(session) if session.current_step >= 3 else {},
+                'sort_items': get_sort_items(session) if session.current_step == 3 else [],
+                'aggregation': get_aggregation_data(session) if session.current_step == 4 else {},
+            }
         })
     
     # If no file uploaded, return error toast
@@ -220,42 +377,52 @@ def upload_files(request):
         </script>
     """, status=400)
 
+@login_required
 @require_POST
 def restart(request):
     """Reset the state and return to step 1."""
-    # Reset the global state
-    STATE['current_step'] = 0
+    # Mark the current session as complete (if exists)
+    current_session = ReceiptSession.objects.filter(
+        user=request.user, 
+        is_complete=False
+    ).order_by('-created_at').first()
     
-    # Clear any stored data
-    if 'upload_folder' in STATE:
-        del STATE['upload_folder']
-    if 'receipt_zip' in STATE:
-        del STATE['receipt_zip']
-    if 'extracted_files' in STATE:
-        del STATE['extracted_files']
-    if 'selected_file' in STATE:
-        del STATE['selected_file']
-    if 'payer' in STATE:
-        del STATE['payer']
-    if 'consumption' in STATE:
-        del STATE['consumption']
-    if 'sort_items' in STATE:
-        del STATE['sort_items']
-    if 'current_sort_index' in STATE:
-        del STATE['current_sort_index']
-    if 'api_costs_total' in STATE:
-        del STATE['api_costs_total']
+    if current_session:
+        current_session.is_complete = True
+        current_session.save()
+        logger.info(f"Marked session {current_session.id} as complete")
+    
+    # Create a new session
+    session = ReceiptSession.objects.create(user=request.user)
+    logger.info(f"Created new session {session.id} for restart")
     
     # Render the full page with reset state
     return render(request, 'start_page.html', {
-        'current_step': STATE['current_step'],
-        'extracted_files': STATE.get('extracted_files', []),
-        'state': STATE
+        'current_step': session.current_step,
+        'extracted_files': [],
+        'session': session,
+        'state': {
+            'current_step': session.current_step,
+            'receipt_zip': session.receipt_zip_filename,
+            'payer': session.payer,
+            'api_costs_total': float(session.api_costs_total),
+            'current_extraction_index': session.current_extraction_index,
+            'files_processed': session.files_processed,
+            'progress_percentage': session.progress_percentage,
+            'current_sort_index': session.current_sort_index,
+            'extracted_files': [],
+            'consumption': {},
+            'sort_items': [],
+            'aggregation': {},
+        }
     })
 
+@login_required
 @require_GET
 def get_step_template(request, step_number):
     """Return just the template content for HTMX updates."""
+    session = get_or_create_session(request.user)
+    
     if step_number == 1:
         return render(request, '1_read_the_docs.html')
     elif step_number == 2:
@@ -264,40 +431,91 @@ def get_step_template(request, step_number):
         return render(request, '3_extract_receipts.html')
     elif step_number == 4:
         return render(request, '4_sort.html', {
-            'state': STATE
+            'state': {
+                'current_step': session.current_step,
+                'receipt_zip': session.receipt_zip_filename,
+                'payer': session.payer,
+                'api_costs_total': float(session.api_costs_total),
+                'current_extraction_index': session.current_extraction_index,
+                'files_processed': session.files_processed,
+                'progress_percentage': session.progress_percentage,
+                'current_sort_index': session.current_sort_index,
+                'consumption': get_consumption_data(session),
+                'sort_items': get_sort_items(session),
+                'aggregation': get_aggregation_data(session),
+            }
         })
     elif step_number == 5:
         return render(request, '5_aggregate.html', {
-            'state': STATE
+            'state': {
+                'current_step': session.current_step,
+                'receipt_zip': session.receipt_zip_filename,
+                'payer': session.payer,
+                'api_costs_total': float(session.api_costs_total),
+                'current_extraction_index': session.current_extraction_index,
+                'files_processed': session.files_processed,
+                'progress_percentage': session.progress_percentage,
+                'current_sort_index': session.current_sort_index,
+                'consumption': get_consumption_data(session),
+                'sort_items': get_sort_items(session),
+                'aggregation': get_aggregation_data(session),
+            }
         })
     else:
         # Default to step 1 if invalid step number
         return render(request, '1_read_the_docs.html')
 
+@login_required
 @require_POST
 def select_file(request):
     """Handle file selection and return the updated main content area."""
+    session = get_or_create_session(request.user)
     selected_file = request.POST.get('file')
-    if selected_file and selected_file in STATE.get('extracted_files', []):
-        STATE['selected_file'] = selected_file
+    
+    # Validate that the selected file belongs to this user's session
+    if selected_file:
+        extracted_file = session.extracted_files.filter(filename=selected_file).first()
+        if extracted_file:
+            # Store selected file in Django session (not our database session)
+            request.session['selected_file'] = selected_file
+            logger.info(f"Selected file: {selected_file}")
     
     # Return just the main content area with the selected file
     return render(request, '3_extract_receipts.html', {
-        'selected_file': STATE.get('selected_file')
+        'selected_file': request.session.get('selected_file')
     })
 
+@login_required
 @require_GET
 def serve_image(request, filename):
     """Serve the selected image file."""
-    if not STATE.get('receipt_zip'):
+    # The filename parameter is URL-encoded, so decode it
+    decoded_filename = urllib.parse.unquote(filename)
+    logger.debug(f"serve_image called with filename: '{filename}' (decoded: '{decoded_filename}')")
+    
+    session = get_or_create_session(request.user)
+    
+    if not session.receipt_zip_filename:
+        logger.error("No file uploaded")
         return HttpResponse("No file uploaded", status=404)
     
-    # Get the extraction directory
-    zip_filename = STATE['receipt_zip']
+    # Find the file using the decoded filename
+    extracted_file = session.extracted_files.filter(filename=decoded_filename).first()
+    if not extracted_file:
+        logger.error(f"File not found in database. Looking for filename: {decoded_filename}")
+        logger.error(f"Available files: {list(session.extracted_files.values_list('filename', flat=True))}")
+        return HttpResponse("File not found or access denied", status=404)
+    
+    # Get the extraction directory and use the relative_path for the actual file path
+    zip_filename = session.receipt_zip_filename
     extract_dir_name = Path(zip_filename).stem
-    image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / filename
+    image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / extracted_file.relative_path
+    
+    logger.debug(f"Looking for image at: {image_path}")
+    logger.debug(f"Image path exists: {image_path.exists()}")
     
     if not image_path.exists() or not image_path.is_file():
+        logger.error(f"File not found on disk at: {image_path}")
         return HttpResponse("File not found", status=404)
     
     # Serve the file
@@ -335,7 +553,8 @@ def image_to_dataframe_dict(image_path, openai_api_key) -> tuple[list[dict], flo
                                 "in front of the price or as a separate line item. Subtract any discounts from "
                                 "the corresponding item's price. Return the result as a Python list of dictionaries, "
                                 "where each dictionary has 'item' and 'price' keys. The 'price' should be a float. "
-                                "Do not include any explanatory text, just the Python code for the list of dictionaries. Return the result as a Python list of dictionaries, without the markdown formatting of the code."
+                                "Do not include any explanatory text, just the Python code for the list of dictionaries, "
+                                "without the markdown formatting of the code."
                             )
                         },
                         {
@@ -389,28 +608,36 @@ def image_to_dataframe_dict(image_path, openai_api_key) -> tuple[list[dict], flo
         logger.error(f"TRACEBACK: {traceback.format_exc()}")
         raise
 
+@login_required
 @require_POST
 def extract_image_data(request):
     """Extract receipt data from the selected image using OpenAI API."""
     logger.debug("Starting image data extraction")
-    logger.debug(f"Current STATE keys: {list(STATE.keys())}")
     
-    selected_file = STATE.get('selected_file')
+    session = get_or_create_session(request.user)
+    selected_file = request.session.get('selected_file')
+    
     logger.info(f"Extracting data from file: {selected_file}")
     
     if not selected_file:
         logger.error("No file selected for extraction")
         return HttpResponse('<div class="alert alert-error">No file selected</div>', status=400)
     
-    # Check if we have the receipt_zip in state
-    if not STATE.get('receipt_zip'):
-        logger.error("No receipt ZIP file found in state")
-        return HttpResponse('<div class="alert alert-error">No receipt ZIP file found in state</div>', status=400)
+    # Validate that the selected file belongs to this user's session
+    extracted_file = session.extracted_files.filter(filename=selected_file).first()
+    if not extracted_file:
+        logger.error(f"File {selected_file} not found in user's session")
+        return HttpResponse('<div class="alert alert-error">File not found or access denied</div>', status=404)
+    
+    # Check if we have the receipt_zip in session
+    if not session.receipt_zip_filename:
+        logger.error("No receipt ZIP file found in session")
+        return HttpResponse('<div class="alert alert-error">No receipt ZIP file found in session</div>', status=400)
     
     # Get the image path
-    zip_filename = STATE['receipt_zip']
+    zip_filename = session.receipt_zip_filename
     extract_dir_name = Path(zip_filename).stem
-    image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / selected_file
+    image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / extracted_file.relative_path
     
     logger.debug(f"Zip filename: {zip_filename}")
     logger.debug(f"Extract dir name: {extract_dir_name}")
@@ -423,11 +650,13 @@ def extract_image_data(request):
     
     # Get OpenAI API key from environment
     try:
+        # Ensure .env is loaded
+        load_dotenv(Path(settings.BASE_DIR) / 'config' / '.env')
         openai_api_key = os.environ['OPENAI_API_KEY']
-        logger.debug(f"OpenAI API key configured: {bool(openai_api_key)}")
+        logger.debug(f"OpenAI API key loaded: {bool(openai_api_key)}")
     except KeyError:
         logger.error("OpenAI API key not configured")
-        return HttpResponse('<div class="alert alert-error">OpenAI API key not configured. Please set OPENAI_API_KEY in .config/.env file.</div>', status=500)
+        return HttpResponse('<div class="alert alert-error">OpenAI API key not configured</div>', status=500)
     
     try:
         logger.info(f"Starting AI extraction for {selected_file}")
@@ -435,20 +664,21 @@ def extract_image_data(request):
         extracted_data, cost = image_to_dataframe_dict(image_path, openai_api_key)
         logger.info(f"Extraction completed. Found {len(extracted_data)} items, cost: ${cost:.4f}")
         
-        # Add cost to total API costs immediately after API call
-        if 'api_costs_total' not in STATE:
-            STATE['api_costs_total'] = 0
-        STATE['api_costs_total'] += cost
-        logger.info(f"Total API costs now: ${STATE['api_costs_total']:.4f}")
+        # Add cost to total API costs
+        session.api_costs_total += Decimal(str(cost))
+        session.save()
+        logger.info(f"Total API costs now: ${session.api_costs_total:.4f}")
         
-        # Store extracted data in state for later use
-        STATE['extracted_data'] = extracted_data
+        # Store extracted data in Django session for later use
+        request.session['extracted_data'] = extracted_data
         
-        # Return the table template
+        # Return the table template with next file button
         return render(request, 'extracted_data_table.html', {
             'extracted_data': extracted_data,
             'cost': cost,
-            'selected_file': selected_file
+            'selected_file': selected_file,
+            'current_file': selected_file,
+            'show_next_button': True
         })
     except Exception as e:
         error_details = traceback.format_exc()
@@ -456,26 +686,38 @@ def extract_image_data(request):
         logger.error(f"TRACEBACK: {error_details}")
         return HttpResponse(f'<div class="alert alert-error">Extraction failed: {str(e)}</div>', status=500)
 
+@login_required
 @require_POST
 def save_extraction(request):
     """Save the filtered extraction data to state."""
     try:
+        session = get_or_create_session(request.user)
         file = request.POST.get('file')
         data_json = request.POST.get('data')
         
         if not file or not data_json:
             return JsonResponse({'error': 'Missing file or data'}, status=400)
         
+        # Validate that the file belongs to this user's session
+        extracted_file = session.extracted_files.filter(filename=file).first()
+        if not extracted_file:
+            return JsonResponse({'error': 'File not found or access denied'}, status=404)
+        
         # Parse the JSON data
         filtered_data = json.loads(data_json)
         
-        # Initialize extracted state if it doesn't exist
-        if 'extracted' not in STATE:
-            STATE['extracted'] = {}
+        # Delete existing items for this file to avoid duplicates
+        ReceiptItem.objects.filter(session=session, source_file=extracted_file).delete()
         
-        # Save the data for this specific file in the same format as confirm_extraction
-        # STATE['extracted'][file_name] = [{"item": "", "price": ""}, ...]
-        STATE['extracted'][file] = filtered_data
+        # Create new ReceiptItem objects
+        for item_data in filtered_data:
+            ReceiptItem.objects.create(
+                session=session,
+                source_file=extracted_file,
+                item_name=item_data['item'],
+                price=Decimal(str(item_data['price'])),
+                is_confirmed=False  # Not confirmed yet
+            )
         
         logger.info(f"Saved {len(filtered_data)} items for {file}")
         
@@ -489,10 +731,12 @@ def save_extraction(request):
         logger.error(f"Traceback: {traceback.format_exc()}")
         return JsonResponse({'error': f'Save failed: {str(e)}'}, status=500)
 
+@login_required
 @require_POST
 def confirm_extraction(request):
-    """Confirm and finalize the extraction data, storing it in STATE."""
+    """Confirm and finalize the extraction data, storing it in database."""
     try:
+        session = get_or_create_session(request.user)
         extracted_data_json = request.POST.get('extracted_data')
         selected_file = request.POST.get('selected_file')
         
@@ -501,6 +745,11 @@ def confirm_extraction(request):
         
         if not extracted_data_json or not selected_file:
             return JsonResponse({'error': 'Missing extracted_data or selected_file'}, status=400)
+        
+        # Validate that the file belongs to this user's session
+        extracted_file = session.extracted_files.filter(filename=selected_file).first()
+        if not extracted_file:
+            return JsonResponse({'error': 'File not found or access denied'}, status=404)
         
         # Parse the JSON data
         extracted_data = json.loads(extracted_data_json)
@@ -515,25 +764,35 @@ def confirm_extraction(request):
             if not isinstance(item, dict) or 'item' not in item or 'price' not in item:
                 return JsonResponse({'error': 'Invalid item format: expected {"item": "", "price": ""}'}, status=400)
         
-        # Initialize extracted state if it doesn't exist
-        if 'extracted' not in STATE:
-            STATE['extracted'] = {}
+        # Delete any existing items for this file to avoid duplicates
+        ReceiptItem.objects.filter(session=session, source_file=extracted_file).delete()
         
-        # Store the confirmed data for this specific file in the exact format requested
-        # STATE['extracted'][file_name] = [{"item": "", "price": ""}, ...]
-        STATE['extracted'][selected_file] = extracted_data
+        # Create new ReceiptItem objects
+        receipt_items = []
+        for item_data in extracted_data:
+            receipt_item = ReceiptItem(
+                session=session,
+                source_file=extracted_file,
+                item_name=item_data['item'],
+                price=Decimal(str(item_data['price'])),
+                is_confirmed=True  # Mark as confirmed
+            )
+            receipt_items.append(receipt_item)
         
-        # Remove the processed file from extracted_files list so it doesn't appear in sidebar
-        if 'extracted_files' in STATE and selected_file in STATE['extracted_files']:
-            STATE['extracted_files'].remove(selected_file)
-            logger.info(f"Removed {selected_file} from processing queue")
+        # Bulk create for efficiency
+        ReceiptItem.objects.bulk_create(receipt_items)
+        
+        # Mark the extracted file as processed
+        extracted_file.is_processed = True
+        extracted_file.extracted_at = timezone.now()
+        extracted_file.save()
         
         logger.info(f"Confirmed extraction: {len(extracted_data)} items for {selected_file}")
         logger.debug(f"Data structure - Type: {type(extracted_data)}, Length: {len(extracted_data)}")
         if extracted_data:
             logger.debug(f"First item: {extracted_data[0]}")
-        logger.debug(f"Current extracted files: {list(STATE.get('extracted', {}).keys())}")
         
+        # Return JSON like the old version
         return JsonResponse({
             'success': True,
             'item_count': len(extracted_data),
@@ -546,28 +805,54 @@ def confirm_extraction(request):
         logger.error(f"TRACEBACK: {error_details}")
         return JsonResponse({'error': f'Confirmation failed: {str(e)}'}, status=500)
 
+@login_required
 @require_POST
 def clear_selection(request):
     """Clear the selected file and return to initial extraction state."""
     try:
-        # Clear the selected file from STATE
-        if 'selected_file' in STATE:
-            del STATE['selected_file']
+        session = get_or_create_session(request.user)
         
-        logger.debug("Cleared selected file from state")
-        logger.debug(f"Remaining files to process: {len(STATE.get('extracted_files', []))}")
+        # Clear the selected file from Django session
+        if 'selected_file' in request.session:
+            del request.session['selected_file']
         
-        # Check if all files have been processed (extracted_files should be empty)
-        if not STATE.get('extracted_files') and STATE.get('extracted', {}):
+        logger.debug("Cleared selected file from Django session")
+        
+        # Check if all files have been processed
+        unprocessed_files = session.extracted_files.filter(is_processed=False, is_skipped=False)
+        confirmed_items = session.receipt_items.filter(is_confirmed=True)
+        
+        logger.debug(f"Remaining unprocessed files: {unprocessed_files.count()}")
+        logger.debug(f"Confirmed items: {confirmed_items.count()}")
+        
+        if not unprocessed_files.exists() and confirmed_items.exists():
             # All files have been processed, move to sorting step
-            STATE['current_step'] = 3  # Move to Sort step
+            session.current_step = 3  # Move to Sort step
+            session.save()
             logger.info("All files processed, advancing to Sort step")
+        
+        # Get updated file lists
+        unprocessed_files = session.extracted_files.filter(is_processed=False, is_skipped=False)
         
         # Return the full page template with updated state
         return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
+            'current_step': session.current_step,
+            'extracted_files': list(unprocessed_files.values_list('filename', flat=True)),
+            'session': session,
+            'state': {
+                'current_step': session.current_step,
+                'receipt_zip': session.receipt_zip_filename,
+                'payer': session.payer,
+                'api_costs_total': float(session.api_costs_total),
+                'current_extraction_index': session.current_extraction_index,
+                'files_processed': session.files_processed,
+                'progress_percentage': session.progress_percentage,
+                'current_sort_index': session.current_sort_index,
+                'extracted_files': list(unprocessed_files.values_list('filename', flat=True)),
+                'consumption': get_consumption_data(session) if session.current_step >= 3 else {},
+                'sort_items': get_sort_items(session) if session.current_step == 3 else [],
+                'aggregation': get_aggregation_data(session) if session.current_step == 4 else {},
+            }
         })
         
     except Exception as e:
@@ -576,103 +861,90 @@ def clear_selection(request):
         logger.error(f"TRACEBACK: {error_details}")
         return HttpResponse(f'<div class="alert alert-error">Clear selection failed: {str(e)}</div>', status=500)
 
-@require_POST
-def start_sorting(request):
-    """Initialize the sorting process by aggregating all extracted items."""
-    try:
-        logger.debug("Initializing sorting process")
-        logger.debug(f"Extracted files available: {list(STATE.get('extracted', {}).keys())}")
-        
-        # Check if we have extracted data
-        if not STATE.get('extracted'):
-            return HttpResponse('<div class="alert alert-error">No extracted data found</div>', status=400)
-        
-        # Initialize consumption tracking if not exists
-        if 'consumption' not in STATE:
-            STATE['consumption'] = {
-                'sebastian': [],
-                'iva': [],
-                'both': []
-            }
-        
-        # Aggregate all items from all files into a single list
-        all_items = []
-        for filename, items in STATE['extracted'].items():
-            for item in items:
-                # Add filename for reference
-                item_with_source = dict(item)
-                item_with_source['source_file'] = filename
-                all_items.append(item_with_source)
-        
-        STATE['sort_items'] = all_items
-        STATE['current_sort_index'] = 0
-        
-        logger.info(f"Initialized sorting with {len(all_items)} total items")
-        logger.debug(f"Items from {len(STATE['extracted'])} files")
-        
-        # Move to sorting step
-        STATE['current_step'] = 3
-        
-        # Return the updated sort template
-        return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
-        })
-        
-    except Exception as e:
-        error_details = traceback.format_exc()
-        logger.error(f"Sorting initialization failed: {str(e)}")
-        logger.error(f"TRACEBACK: {error_details}")
-        return HttpResponse(f'<div class="alert alert-error">Sorting initialization failed: {str(e)}</div>', status=500)
-
+@login_required
 @require_POST
 def assign_item(request):
     """Assign current item to a person (sebastian, iva, or both)."""
     try:
+        session = get_or_create_session(request.user)
         assignee = request.POST.get('assignee')
         
         if assignee not in ['sebastian', 'iva', 'both']:
             return JsonResponse({'error': 'Invalid assignee'}, status=400)
         
-        current_index = STATE.get('current_sort_index', 0)
-        sort_items = STATE.get('sort_items', [])
+        # Get the next unassigned confirmed receipt item
+        unassigned_items = session.receipt_items.filter(
+            is_confirmed=True,
+            sorted_assignment__isnull=True
+        ).order_by('id')
         
-        if current_index >= len(sort_items):
+        current_item = unassigned_items.first()
+        
+        if not current_item:
             return JsonResponse({'error': 'No more items to sort'}, status=400)
         
-        current_item = sort_items[current_index]
+        # Create SortedItem assignment
+        SortedItem.objects.create(
+            session=session,
+            receipt_item=current_item,
+            assignee=assignee
+        )
         
-        # Add item to the appropriate list
-        STATE['consumption'][assignee].append({
-            'item': current_item['item'],
-            'price': current_item['price'],
-            'source_file': current_item.get('source_file', '')
-        })
+        # Update current sort index
+        session.current_sort_index += 1
+        session.save()
         
-        # Move to next item
-        STATE['current_sort_index'] += 1
+        logger.info(f"Assigned '{current_item.item_name}' (CHF {current_item.price}) to {assignee}")
         
-        logger.info(f"Assigned '{current_item['item']}' (CHF {current_item['price']}) to {assignee}")
-        logger.debug(f"Progress: {STATE['current_sort_index']}/{len(sort_items)}")
+        # Check if we're done sorting
+        remaining_unassigned = session.receipt_items.filter(
+            is_confirmed=True,
+            sorted_assignment__isnull=True
+        ).count()
         
-        # Check if we're done
-        if STATE['current_sort_index'] >= len(sort_items):
+        logger.debug(f"Remaining unassigned items: {remaining_unassigned}")
+        
+        if remaining_unassigned == 0:
             # All items sorted - move directly to aggregation
-            STATE['current_step'] = 4
-            calculate_aggregation()
+            session.current_step = 4
+            session.save()
+            calculate_aggregation(session)
             logger.info("All items sorted, advancing to Aggregation step")
             
             # Return just the aggregate template content with trigger to update sidebar
             response = render(request, '5_aggregate.html', {
-                'state': STATE
+                'state': {
+                    'current_step': session.current_step,
+                    'receipt_zip': session.receipt_zip_filename,
+                    'payer': session.payer,
+                    'api_costs_total': float(session.api_costs_total),
+                    'current_extraction_index': session.current_extraction_index,
+                    'files_processed': session.files_processed,
+                    'progress_percentage': session.progress_percentage,
+                    'current_sort_index': session.current_sort_index,
+                    'consumption': get_consumption_data(session),
+                    'sort_items': get_sort_items(session),
+                    'aggregation': get_aggregation_data(session),
+                }
             })
             response['HX-Trigger'] = 'sortingComplete'
             return response
         
         # Return the updated sort template with next item
         return render(request, '4_sort.html', {
-            'state': STATE
+            'state': {
+                'current_step': session.current_step,
+                'receipt_zip': session.receipt_zip_filename,
+                'payer': session.payer,
+                'api_costs_total': float(session.api_costs_total),
+                'current_extraction_index': session.current_extraction_index,
+                'files_processed': session.files_processed,
+                'progress_percentage': session.progress_percentage,
+                'current_sort_index': session.current_sort_index,
+                'consumption': get_consumption_data(session),
+                'sort_items': get_sort_items(session),
+                'aggregation': get_aggregation_data(session),
+            }
         })
         
     except Exception as e:
@@ -681,60 +953,56 @@ def assign_item(request):
         logger.error(f"TRACEBACK: {error_details}")
         return JsonResponse({'error': f'Assignment failed: {str(e)}'}, status=500)
 
+@login_required
 @require_GET
 def get_current_sort_item(request):
     """Get the current item to be sorted and return HTML."""
     try:
+        session = get_or_create_session(request.user)
         logger.debug("Getting current sort item")
-        logger.debug(f"Current index: {STATE.get('current_sort_index', 0)}")
+        logger.debug(f"Current sort index: {session.current_sort_index}")
         
-        # Check if we need to initialize sorting first
-        if not STATE.get('sort_items') and STATE.get('extracted', {}):
-            logger.debug("No sort_items found, initializing sorting...")
-            # Initialize consumption tracking if not exists
-            if 'consumption' not in STATE:
-                STATE['consumption'] = {
-                    'sebastian': [],
-                    'iva': [],
-                    'both': []
-                }
-            
-            # Aggregate all items from all files into a single list
-            all_items = []
-            for filename, items in STATE['extracted'].items():
-                for item in items:
-                    # Add filename for reference
-                    item_with_source = dict(item)
-                    item_with_source['source_file'] = filename
-                    all_items.append(item_with_source)
-            
-            STATE['sort_items'] = all_items
-            STATE['current_sort_index'] = 0
-            
-            logger.info(f"Auto-initialized sorting with {len(all_items)} items")
+        # Get the next unassigned confirmed receipt item
+        unassigned_items = session.receipt_items.filter(
+            is_confirmed=True,
+            sorted_assignment__isnull=True
+        ).order_by('id')
         
-        current_index = STATE.get('current_sort_index', 0)
-        sort_items = STATE.get('sort_items', [])
+        total_items = session.receipt_items.filter(is_confirmed=True).count()
+        assigned_items = session.sorted_items.count()
+        current_index = assigned_items
         
-        logger.debug(f"Current index: {current_index}, Total items: {len(sort_items)}")
+        logger.debug(f"Current index: {current_index}, Total items: {total_items}")
         
-        if current_index >= len(sort_items):
+        current_item = unassigned_items.first()
+        
+        if not current_item:
             # All items sorted - move directly to aggregation
-            STATE['current_step'] = 4
-            calculate_aggregation()
+            session.current_step = 4
+            session.save()
+            calculate_aggregation(session)
             logger.info("All items sorted, showing aggregation results")
             
             # Return just the aggregate template content with trigger to update sidebar
             response = render(request, '5_aggregate.html', {
-                'state': STATE
+                'state': {
+                    'current_step': session.current_step,
+                    'receipt_zip': session.receipt_zip_filename,
+                    'payer': session.payer,
+                    'api_costs_total': float(session.api_costs_total),
+                    'current_extraction_index': session.current_extraction_index,
+                    'files_processed': session.files_processed,
+                    'progress_percentage': session.progress_percentage,
+                    'current_sort_index': session.current_sort_index,
+                    'consumption': get_consumption_data(session),
+                    'sort_items': get_sort_items(session),
+                    'aggregation': get_aggregation_data(session),
+                }
             })
             response['HX-Trigger'] = 'sortingComplete'
             return response
         
-        current_item = sort_items[current_index]
-        total_items = len(sort_items)
-        
-        logger.debug(f"Displaying item: {current_item['item']} (CHF {current_item['price']})")
+        logger.debug(f"Displaying item: {current_item.item_name} (CHF {current_item.price})")
         
         # Calculate progress percentage
         progress_percentage = int((current_index / total_items) * 100) if total_items > 0 else 0
@@ -744,9 +1012,9 @@ def get_current_sort_item(request):
         
         return HttpResponse(f"""
             <div class="space-y-4">
-                <h3 class="text-xl font-bold text-base-content">{current_item['item']}</h3>
-                <p class="text-2xl font-mono text-primary">CHF {current_item['price']}</p>
-                <p class="text-sm text-base-content/60">From: {current_item.get('source_file', '')}</p>
+                <h3 class="text-xl font-bold text-base-content">{current_item.item_name}</h3>
+                <p class="text-2xl font-mono text-primary">CHF {current_item.price}</p>
+                <p class="text-sm text-base-content/60">From: {current_item.source_file.filename}</p>
             </div>
             <script>
                 // Update progress bar and numbers only
@@ -773,53 +1041,79 @@ def get_current_sort_item(request):
             </div>
         """)
 
-def calculate_aggregation():
+def calculate_aggregation(session):
     """Calculate spending aggregation and transfer payment."""
     try:
-        consumption = STATE.get('consumption', {})
-        payer = STATE.get('payer', '')
+        payer = session.payer
         
         logger.debug(f"Calculating aggregation for payer: {payer}")
-        logger.debug(f"Consumption categories: {[f'{k}={len(v)} items' for k, v in consumption.items()]}")
+        
+        # Get consumption data from sorted items
+        sebastian_items = session.sorted_items.filter(assignee='sebastian').select_related('receipt_item')
+        iva_items = session.sorted_items.filter(assignee='iva').select_related('receipt_item')
+        both_items = session.sorted_items.filter(assignee='both').select_related('receipt_item')
+        
+        logger.debug(f"Items count - Sebastian: {sebastian_items.count()}, Iva: {iva_items.count()}, Both: {both_items.count()}")
         
         # Calculate sums for each category
-        sebastian_total = sum(float(item['price']) for item in consumption.get('sebastian', []))
-        iva_total = sum(float(item['price']) for item in consumption.get('iva', []))
-        both_total = sum(float(item['price']) for item in consumption.get('both', []))
+        sebastian_total = sum(item.receipt_item.price for item in sebastian_items)
+        iva_total = sum(item.receipt_item.price for item in iva_items)
+        both_total = sum(item.receipt_item.price for item in both_items)
         
         logger.debug(f"Raw totals - Sebastian: {sebastian_total}, Iva: {iva_total}, Both: {both_total}")
         
         # Calculate transfer payment based on payer
-        if payer.lower() == 'iva':
+        if payer and payer.lower() == 'iva':
             # Sebastian owes Iva: Sebastian's expenses + half of shared expenses
             transfer_amount = sebastian_total + (both_total / 2)
             transfer_direction = f"Sebastian → Iva"
-        elif payer.lower() == 'sebastian':
+        elif payer and payer.lower() == 'sebastian':
             # Iva owes Sebastian: Iva's expenses + half of shared expenses
             transfer_amount = iva_total + (both_total / 2)
             transfer_direction = f"Iva → Sebastian"
         else:
-            transfer_amount = 0
+            transfer_amount = Decimal('0')
             transfer_direction = "No payer specified"
         
-        aggregation_data = {
+        grand_total = sebastian_total + iva_total + both_total
+        
+        # Create or update SessionAggregation
+        aggregation, created = SessionAggregation.objects.get_or_create(
+            session=session,
+            defaults={
             'sebastian_total': sebastian_total,
             'iva_total': iva_total,
             'both_total': both_total,
+                'grand_total': grand_total,
             'transfer_amount': transfer_amount,
             'transfer_direction': transfer_direction,
-            'payer': payer,
-            'grand_total': sebastian_total + iva_total + both_total
-        }
+            }
+        )
         
-        # Store in STATE for access in template
-        STATE['aggregation'] = aggregation_data
+        if not created:
+            # Update existing aggregation
+            aggregation.sebastian_total = sebastian_total
+            aggregation.iva_total = iva_total
+            aggregation.both_total = both_total
+            aggregation.grand_total = grand_total
+            aggregation.transfer_amount = transfer_amount
+            aggregation.transfer_direction = transfer_direction
+            aggregation.calculated_at = timezone.now()
+            aggregation.save()
         
-        logger.info(f"Aggregation calculated: Total CHF {aggregation_data['grand_total']:.2f}")
+        logger.info(f"Aggregation calculated: Total CHF {grand_total:.2f}")
         logger.info(f"Transfer payment: {transfer_direction} CHF {transfer_amount:.2f}")
         logger.debug(f"Breakdown - Sebastian: CHF {sebastian_total:.2f}, Iva: CHF {iva_total:.2f}, Shared: CHF {both_total:.2f}")
         
-        return aggregation_data
+        return {
+            'sebastian_total': float(sebastian_total),
+            'iva_total': float(iva_total),
+            'both_total': float(both_total),
+            'transfer_amount': float(transfer_amount),
+            'transfer_direction': transfer_direction,
+            'payer': payer,
+            'grand_total': float(grand_total)
+        }
         
     except Exception as e:
         logger.error(f"Error calculating aggregation: {str(e)}")
@@ -833,68 +1127,113 @@ def calculate_aggregation():
             'grand_total': 0
         }
 
+@login_required
 @require_POST
 def start_extraction(request):
     """Initialize the extraction process and set the first file as current."""
     try:
-        if not STATE.get('extracted_files'):
+        session = get_or_create_session(request.user)
+        
+        # Get unprocessed files
+        unprocessed_files = session.extracted_files.filter(is_processed=False, is_skipped=False)
+        
+        if not unprocessed_files.exists():
             return HttpResponse('<div class="alert alert-error">No files to extract</div>', status=400)
         
-        # Set the first file as current
-        STATE['current_extraction_index'] = 0
-        STATE['current_file'] = STATE['extracted_files'][0]
+        # Reset extraction progress
+        session.current_extraction_index = 0
+        session.files_processed = 0
+        session.progress_percentage = 0
+        session.save()
         
-        # Initialize extraction tracking
-        if 'extracted' not in STATE:
-            STATE['extracted'] = {}
-        
-        # Initialize progress tracking
-        total_files = len(STATE['extracted_files'])
-        STATE['files_processed'] = 0
-        STATE['progress_percentage'] = 0
+        total_files = unprocessed_files.count()
+        first_file_obj = unprocessed_files.first()
+        first_file = first_file_obj.filename
         
         logger.info(f"Started extraction process with {total_files} files")
-        logger.info(f"First file: {STATE['current_file']}")
+        logger.info(f"First file: {first_file}")
         
-        # Return the full page with updated state
-        return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
+        # Store current file in Django session
+        request.session['current_file'] = first_file
+        
+        # Get updated unprocessed files for context
+        unprocessed_files_list = list(unprocessed_files.values_list('filename', flat=True))
+        
+        # Create context that matches what start_page.html expects
+        context = {
+            'current_step': session.current_step,
+            'extracted_files': unprocessed_files_list,
+            'session': session,
+            'current_file': first_file,  # Original filename for display
+            'state': {
+                'current_step': session.current_step,
+                'receipt_zip': session.receipt_zip_filename,
+                'payer': session.payer,
+                'api_costs_total': float(session.api_costs_total),
+                'current_extraction_index': session.current_extraction_index,
+                'files_processed': session.files_processed,
+                'progress_percentage': session.progress_percentage,
+                'current_sort_index': session.current_sort_index,
+                'extracted_files': unprocessed_files_list,
+                'current_file': first_file,  # This is what the template needs
+                'consumption': get_consumption_data(session) if session.current_step >= 3 else {},
+                'sort_items': get_sort_items(session) if session.current_step == 3 else [],
+                'aggregation': get_aggregation_data(session) if session.current_step == 4 else {},
+            }
+        }
+        
+        # Return just the extraction template instead of full page
+        return render(request, '3_extract_receipts.html', {
+            'current_file': first_file,
+            'total_files': total_files,
+            'files_processed': 0,
+            'progress_percentage': 0
         })
         
     except Exception as e:
         logger.error(f"Failed to start extraction: {str(e)}")
         return HttpResponse(f'<div class="alert alert-error">Failed to start extraction: {str(e)}</div>', status=500)
 
+@login_required
 @require_POST
 def extract_current_image(request):
     """Extract receipt data from the current image in the sequence."""
     try:
-        current_file = STATE.get('current_file')
+        session = get_or_create_session(request.user)
+        current_file = request.session.get('current_file')
+        
         if not current_file:
             logger.error("No current file set for extraction")
             return HttpResponse('<div class="alert alert-error">No current file set</div>', status=400)
         
         logger.info(f"Extracting data from current file: {current_file}")
         
-        # Check if we have the receipt_zip in state
-        if not STATE.get('receipt_zip'):
-            logger.error("No receipt ZIP file found in state")
-            return HttpResponse('<div class="alert alert-error">No receipt ZIP file found in state</div>', status=400)
+        # Validate that the current file belongs to this user's session
+        extracted_file = session.extracted_files.filter(filename=current_file).first()
+        if not extracted_file:
+            logger.error(f"File {current_file} not found in user's session")
+            return HttpResponse('<div class="alert alert-error">File not found or access denied</div>', status=404)
+        
+        # Check if we have the receipt_zip in session
+        if not session.receipt_zip_filename:
+            logger.error("No receipt ZIP file found in session")
+            return HttpResponse('<div class="alert alert-error">No receipt ZIP file found in session</div>', status=400)
         
         # Get the image path
-        zip_filename = STATE['receipt_zip']
+        zip_filename = session.receipt_zip_filename
         extract_dir_name = Path(zip_filename).stem
-        image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / current_file
+        image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / extracted_file.relative_path
         
         if not image_path.exists():
             logger.error(f"Image file not found at: {image_path}")
-            return HttpResponse(f'<div class="alert alert-error">Image file not found</div>', status=404)
+            return HttpResponse(f'<div class="alert alert-error">Image file not found at: {image_path}</div>', status=404)
         
         # Get OpenAI API key from environment
         try:
+            # Ensure .env is loaded
+            load_dotenv(Path(settings.BASE_DIR) / 'config' / '.env')
             openai_api_key = os.environ['OPENAI_API_KEY']
+            logger.debug(f"OpenAI API key loaded: {bool(openai_api_key)}")
         except KeyError:
             logger.error("OpenAI API key not configured")
             return HttpResponse('<div class="alert alert-error">OpenAI API key not configured</div>', status=500)
@@ -904,13 +1243,12 @@ def extract_current_image(request):
         logger.info(f"Extraction completed. Found {len(extracted_data)} items, cost: ${cost:.4f}")
         
         # Add cost to total API costs
-        if 'api_costs_total' not in STATE:
-            STATE['api_costs_total'] = 0
-        STATE['api_costs_total'] += cost
-        logger.info(f"Total API costs now: ${STATE['api_costs_total']:.4f}")
+        session.api_costs_total += Decimal(str(cost))
+        session.save()
+        logger.info(f"Total API costs now: ${session.api_costs_total:.4f}")
         
-        # Store extracted data in state for later use
-        STATE['extracted_data'] = extracted_data
+        # Store extracted data in Django session for later use
+        request.session['extracted_data'] = extracted_data
         
         # Return the table template with next file button
         return render(request, 'extracted_data_table.html', {
@@ -927,74 +1265,447 @@ def extract_current_image(request):
         logger.error(f"TRACEBACK: {error_details}")
         return HttpResponse(f'<div class="alert alert-error">Extraction failed: {str(e)}</div>', status=500)
 
+@login_required
 @require_POST
 def skip_current_file(request):
     """Skip the current file and move to the next one."""
     try:
-        current_file = STATE.get('current_file')
+        session = get_or_create_session(request.user)
+        current_file = request.session.get('current_file')
+        
         if current_file:
             logger.info(f"Skipping file: {current_file}")
-            # Remove from extracted_files list
-            if current_file in STATE.get('extracted_files', []):
-                STATE['extracted_files'].remove(current_file)
+            
+            # Mark the file as skipped in the database
+            extracted_file = session.extracted_files.filter(filename=current_file).first()
+            if extracted_file:
+                extracted_file.is_skipped = True
+                extracted_file.save()
+                logger.info(f"Marked {current_file} as skipped")
         
-        return next_file(request)
+        # Use the new targeted content system to move to next file
+        return next_extraction_content(request)
         
     except Exception as e:
         logger.error(f"Failed to skip current file: {str(e)}")
         return HttpResponse(f'<div class="alert alert-error">Failed to skip file: {str(e)}</div>', status=500)
 
+@login_required
 @require_POST  
 def next_file(request):
     """Move to the next file in the extraction sequence."""
     try:
         # Get current progress
-        current_index = STATE.get('current_extraction_index', 0)
-        extracted_files = STATE.get('extracted_files', [])
+        current_index = request.session.get('current_extraction_index', 0)
+        extracted_files = request.session.get('extracted_files', [])
         
         # Move to next file
         current_index += 1
-        STATE['current_extraction_index'] = current_index
+        request.session['current_extraction_index'] = current_index
         
         # Calculate progress
         total_files = len(extracted_files)
         files_processed = current_index
         progress_percentage = int((files_processed / total_files) * 100) if total_files > 0 else 0
         
-        STATE['files_processed'] = files_processed
-        STATE['progress_percentage'] = progress_percentage
+        request.session['files_processed'] = files_processed
+        request.session['progress_percentage'] = progress_percentage
         
         if current_index < len(extracted_files):
             # Set next file as current
-            STATE['current_file'] = extracted_files[current_index]
-            logger.info(f"Moving to next file: {STATE['current_file']} ({current_index + 1}/{len(extracted_files)})")
+            request.session['current_file'] = extracted_files[current_index]
+            logger.info(f"Moving to next file: {request.session['current_file']} ({current_index + 1}/{len(extracted_files)})")
         else:
             # All files processed
-            STATE['current_file'] = None
-            STATE['current_step'] = 3  # Move to Sort step
+            request.session['current_file'] = None
+            session = get_or_create_session(request.user)
+            session.current_step = 3  # Move to Sort step
+            session.save()
             logger.info("All files processed, advancing to Sort step")
             
             # Prepare sort items from all extracted data
-            if STATE.get('extracted', {}):
+            if request.session.get('extracted', {}):
                 sort_items = []
-                for filename, data in STATE['extracted'].items():
+                for filename, data in request.session['extracted'].items():
                     for item in data:
                         sort_items.append({
                             'item': item['item'],
                             'price': float(item['price']),
                             'filename': filename
                         })
-                STATE['sort_items'] = sort_items
-                STATE['current_sort_index'] = 0
+                request.session['sort_items'] = sort_items
+                session.sort_items = sort_items
+                session.current_sort_index = 0
+                session.save()
                 logger.info(f"Prepared {len(sort_items)} items for sorting")
         
         # Return the full page with updated state
         return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
+            'current_step': session.current_step,
+            'extracted_files': request.session.get('extracted_files', []),
+            'state': request.session
         })
         
     except Exception as e:
         logger.error(f"Failed to advance to next file: {str(e)}")
+        return HttpResponse(f'<div class="alert alert-error">Failed to advance: {str(e)}</div>', status=500)
+
+@login_required
+@require_POST  
+def next_file_in_queue(request):
+    """Move to the next unprocessed file in the extraction queue."""
+    try:
+        session = get_or_create_session(request.user)
+        
+        # Get all unprocessed files
+        unprocessed_files = session.extracted_files.filter(is_processed=False, is_skipped=False).order_by('filename')
+        
+        # Update progress tracking
+        total_files = session.extracted_files.count()
+        processed_files = session.extracted_files.filter(is_processed=True).count()
+        skipped_files = session.extracted_files.filter(is_skipped=True).count()
+        files_processed = processed_files + skipped_files
+        progress_percentage = int((files_processed / total_files) * 100) if total_files > 0 else 0
+        
+        session.current_extraction_index = files_processed
+        session.files_processed = files_processed
+        session.progress_percentage = progress_percentage
+        session.save()
+        
+        logger.info(f"Progress update: {files_processed}/{total_files} files completed ({progress_percentage}%)")
+        
+        if unprocessed_files.exists():
+            # Set next file as current
+            next_file = unprocessed_files.first()
+            request.session['current_file'] = next_file.filename
+            logger.info(f"Moving to next file: {next_file.filename}")
+            
+            # Use the targeted content function instead of full page render
+            return next_extraction_content(request)
+        else:
+            # All files processed - check if we have any confirmed items to move to sorting
+            confirmed_items = session.receipt_items.filter(is_confirmed=True)
+            
+            if confirmed_items.exists():
+                # Move to sorting step
+                session.current_step = 3
+                session.save()
+                logger.info("All files processed, advancing to Sort step")
+                
+                # Clear current file
+                if 'current_file' in request.session:
+                    del request.session['current_file']
+                
+                # Return sorting template with trigger to update progress steps
+                response = render(request, '4_sort.html', {
+                    'state': {
+                        'current_step': session.current_step,
+                        'receipt_zip': session.receipt_zip_filename,
+                        'payer': session.payer,
+                        'api_costs_total': float(session.api_costs_total),
+                        'current_extraction_index': session.current_extraction_index,
+                        'files_processed': session.files_processed,
+                        'progress_percentage': session.progress_percentage,
+                        'current_sort_index': session.current_sort_index,
+                        'consumption': get_consumption_data(session),
+                        'sort_items': get_sort_items(session),
+                        'aggregation': get_aggregation_data(session),
+                    }
+                })
+                
+                # Add success toast for completion
+                completion_toast = '''
+                    <div class="toast toast-top toast-center" id="completion-toast" hx-swap-oob="true">
+                        <div class="alert alert-success">
+                            <span>🎉 All files processed! Now sort the extracted items.</span>
+                        </div>
+                    </div>
+                    <script>
+                        setTimeout(() => {
+                            const toast = document.getElementById('completion-toast');
+                            if (toast) toast.remove();
+                        }, 5000);
+                    </script>
+                '''
+                
+                # Combine content
+                full_content = response.content.decode('utf-8') + completion_toast
+                response = HttpResponse(full_content)
+                
+                # Add trigger to update the progress steps
+                response['HX-Trigger'] = 'extractionComplete'
+                return response
+            else:
+                # No confirmed items - advance to final step with zeros and warning
+                logger.warning("All files processed but no confirmed items found")
+                session.current_step = 4  # Move to aggregation step
+                session.save()
+                
+                # Calculate aggregation even with no items to create proper zero-valued record
+                calculate_aggregation(session)
+                
+                # Clear current file
+                if 'current_file' in request.session:
+                    del request.session['current_file']
+                
+                # Return aggregation template with warning and zero amounts
+                response = render(request, '5_aggregate.html', {
+                    'state': {
+                        'current_step': session.current_step,
+                        'receipt_zip': session.receipt_zip_filename,
+                        'payer': session.payer,
+                        'api_costs_total': float(session.api_costs_total),
+                        'current_extraction_index': session.current_extraction_index,
+                        'files_processed': session.files_processed,
+                        'progress_percentage': session.progress_percentage,
+                        'current_sort_index': session.current_sort_index,
+                        'consumption': get_consumption_data(session),
+                        'sort_items': get_sort_items(session),
+                        'aggregation': get_aggregation_data(session),
+                    }
+                })
+                
+                # Add warning toast
+                warning_toast = '''
+                    <div class="toast toast-top toast-center" id="warning-toast" hx-swap-oob="true">
+                        <div class="alert alert-warning">
+                            <span>⚠️ All files processed but no items were confirmed for sorting.</span>
+                        </div>
+                    </div>
+                    <script>
+                        setTimeout(() => {
+                            const toast = document.getElementById('warning-toast');
+                            if (toast) toast.remove();
+                        }, 8000);
+                    </script>
+                '''
+                
+                # Combine content
+                full_content = response.content.decode('utf-8') + warning_toast
+                response = HttpResponse(full_content)
+                
+                # Add trigger to update the progress steps to final step
+                response['HX-Trigger'] = 'sortingComplete'
+                return response
+        
+    except Exception as e:
+        logger.error(f"Failed to get next extraction content: {str(e)}")
+        return HttpResponse(f'<div class="alert alert-error">Failed to advance: {str(e)}</div>', status=500)
+
+@login_required
+@require_GET
+def get_progress_update(request):
+    """Return just the progress section for targeted updates."""
+    try:
+        session = get_or_create_session(request.user)
+        current_file = request.session.get('current_file')
+        
+        # Update progress tracking
+        total_files = session.extracted_files.count()
+        processed_files = session.extracted_files.filter(is_processed=True).count()
+        skipped_files = session.extracted_files.filter(is_skipped=True).count()
+        files_processed = processed_files + skipped_files
+        progress_percentage = int((files_processed / total_files) * 100) if total_files > 0 else 0
+        
+        # Return just the progress HTML fragment
+        return HttpResponse(f'''
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div class="flex-1">
+                    <h3 class="text-lg font-semibold text-base-content mb-2">Extraction Progress</h3>
+                    {"<p class=\"text-sm text-base-content/70\">Currently extracting: <span class=\"font-mono\">" + current_file + "</span></p>" if current_file else "<p class=\"text-sm text-base-content/70\">Ready to start extraction</p>"}
+                </div>
+                <div class="text-right">
+                    <div class="text-sm text-base-content/60 mb-1">
+                        {files_processed} of {total_files} files completed
+                    </div>
+                    <div class="w-48">
+                        <progress class="progress progress-primary w-full" value="{progress_percentage}" max="100"></progress>
+                    </div>
+                </div>
+            </div>
+        ''')
+        
+    except Exception as e:
+        logger.error(f"Failed to get progress update: {str(e)}")
+        return HttpResponse('<div class="alert alert-error">Progress update failed</div>', status=500)
+
+@login_required
+@require_POST  
+def next_extraction_content(request):
+    """Return just the extraction content for the next file (for targeted HTMX swap)."""
+    try:
+        session = get_or_create_session(request.user)
+        
+        # Get all unprocessed files
+        unprocessed_files = session.extracted_files.filter(is_processed=False, is_skipped=False).order_by('filename')
+        
+        # Update progress tracking
+        total_files = session.extracted_files.count()
+        processed_files = session.extracted_files.filter(is_processed=True).count()
+        skipped_files = session.extracted_files.filter(is_skipped=True).count()
+        files_processed = processed_files + skipped_files
+        progress_percentage = int((files_processed / total_files) * 100) if total_files > 0 else 0
+        
+        session.current_extraction_index = files_processed
+        session.files_processed = files_processed
+        session.progress_percentage = progress_percentage
+        session.save()
+        
+        logger.info(f"Progress update: {files_processed}/{total_files} files completed ({progress_percentage}%)")
+        
+        if unprocessed_files.exists():
+            # Set next file as current
+            next_file = unprocessed_files.first()
+            request.session['current_file'] = next_file.filename
+            logger.info(f"Moving to next file: {next_file.filename}")
+            
+            # Return just the extraction template with the next file and OOB progress update
+            extraction_content = render(request, '3_extract_receipts.html', {
+                'current_file': next_file.filename,
+                'total_files': total_files,
+                'files_processed': files_processed,
+                'progress_percentage': progress_percentage
+            })
+            
+            # Add Out-of-Band progress update and success toast
+            progress_html = f'''
+                <div id="progress-content" class="flex flex-col sm:flex-row sm:items-center justify-between gap-4" hx-swap-oob="true">
+                    <div class="flex-1">
+                        <h3 class="text-lg font-semibold text-base-content mb-2">Extraction Progress</h3>
+                        <p class="text-sm text-base-content/70">Currently extracting: <span class="font-mono">{next_file.filename}</span></p>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-sm text-base-content/60 mb-1">
+                            {files_processed} of {total_files} files completed
+                        </div>
+                        <div class="w-48">
+                            <progress class="progress progress-primary w-full" value="{progress_percentage}" max="100"></progress>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="toast toast-top toast-center" id="success-toast" hx-swap-oob="true">
+                    <div class="alert alert-success">
+                        <span>✅ Extraction confirmed! Moving to next file...</span>
+                    </div>
+                </div>
+                <script>
+                    setTimeout(() => {{
+                        const toast = document.getElementById('success-toast');
+                        if (toast) toast.remove();
+                    }}, 3000);
+                </script>
+            '''
+            
+            # Combine the content
+            full_content = extraction_content.content.decode('utf-8') + progress_html
+            return HttpResponse(full_content)
+        else:
+            # All files processed - return sorting step content
+            confirmed_items = session.receipt_items.filter(is_confirmed=True)
+            
+            if confirmed_items.exists():
+                # Move to sorting step
+                session.current_step = 3
+                session.save()
+                logger.info("All files processed, advancing to Sort step")
+                
+                # Clear current file
+                if 'current_file' in request.session:
+                    del request.session['current_file']
+                
+                # Return sorting template with trigger to update progress steps
+                response = render(request, '4_sort.html', {
+                    'state': {
+                        'current_step': session.current_step,
+                        'receipt_zip': session.receipt_zip_filename,
+                        'payer': session.payer,
+                        'api_costs_total': float(session.api_costs_total),
+                        'current_extraction_index': session.current_extraction_index,
+                        'files_processed': session.files_processed,
+                        'progress_percentage': session.progress_percentage,
+                        'current_sort_index': session.current_sort_index,
+                        'consumption': get_consumption_data(session),
+                        'sort_items': get_sort_items(session),
+                        'aggregation': get_aggregation_data(session),
+                    }
+                })
+                
+                # Add success toast for completion
+                completion_toast = '''
+                    <div class="toast toast-top toast-center" id="completion-toast" hx-swap-oob="true">
+                        <div class="alert alert-success">
+                            <span>🎉 All files processed! Now sort the extracted items.</span>
+                        </div>
+                    </div>
+                    <script>
+                        setTimeout(() => {
+                            const toast = document.getElementById('completion-toast');
+                            if (toast) toast.remove();
+                        }, 5000);
+                    </script>
+                '''
+                
+                # Combine content
+                full_content = response.content.decode('utf-8') + completion_toast
+                response = HttpResponse(full_content)
+                
+                # Add trigger to update the progress steps to final step
+                response['HX-Trigger'] = 'sortingComplete'
+                return response
+            else:
+                # No confirmed items - this shouldn't happen
+                logger.warning("All files processed but no confirmed items found")
+                session.current_step = 4  # Move to aggregation step
+                session.save()
+                
+                # Calculate aggregation even with no items to create proper zero-valued record
+                calculate_aggregation(session)
+                
+                # Clear current file
+                if 'current_file' in request.session:
+                    del request.session['current_file']
+                
+                # Return aggregation template with warning and zero amounts
+                response = render(request, '5_aggregate.html', {
+                    'state': {
+                        'current_step': session.current_step,
+                        'receipt_zip': session.receipt_zip_filename,
+                        'payer': session.payer,
+                        'api_costs_total': float(session.api_costs_total),
+                        'current_extraction_index': session.current_extraction_index,
+                        'files_processed': session.files_processed,
+                        'progress_percentage': session.progress_percentage,
+                        'current_sort_index': session.current_sort_index,
+                        'consumption': get_consumption_data(session),
+                        'sort_items': get_sort_items(session),
+                        'aggregation': get_aggregation_data(session),
+                    }
+                })
+                
+                # Add warning toast
+                warning_toast = '''
+                    <div class="toast toast-top toast-center" id="warning-toast" hx-swap-oob="true">
+                        <div class="alert alert-warning">
+                            <span>⚠️ All files processed but no items were confirmed for sorting.</span>
+                        </div>
+                    </div>
+                    <script>
+                        setTimeout(() => {
+                            const toast = document.getElementById('warning-toast');
+                            if (toast) toast.remove();
+                        }, 8000);
+                    </script>
+                '''
+                
+                # Combine content
+                full_content = response.content.decode('utf-8') + warning_toast
+                response = HttpResponse(full_content)
+                
+                # Add trigger to update the progress steps to final step
+                response['HX-Trigger'] = 'sortingComplete'
+                return response
+        
+    except Exception as e:
+        logger.error(f"Failed to get next extraction content: {str(e)}")
         return HttpResponse(f'<div class="alert alert-error">Failed to advance: {str(e)}</div>', status=500)

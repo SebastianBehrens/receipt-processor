@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}Logged Out - Receipt Processor{% endblock %}
+
+{% block content %}
+<div class="hero min-h-screen">
+    <div class="hero-content text-center">
+        <div class="max-w-md">
+            <h1 class="text-5xl font-bold">👋</h1>
+            <h1 class="text-3xl font-bold">Successfully Logged Out</h1>
+            <p class="py-6">You have been logged out of the Receipt Processor. Your session data has been cleared.</p>
+            <a href="/accounts/login/" class="btn btn-primary">
+                <span class="material-symbols-rounded">login</span>
+                Login Again
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %} 

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Receipt Processor{% endblock %}
+
+{% block content %}
+<div class="hero min-h-screen">
+    <div class="hero-content flex-col lg:flex-row-reverse">
+        <div class="text-center lg:text-left lg:ml-8">
+            <h1 class="text-5xl font-bold">🧾 Receipt Processor</h1>
+            <p class="py-6">Process your receipts with AI-powered extraction and smart categorization. Upload ZIP files, extract items automatically, and split expenses between Sebastian and Iva.</p>
+            <div class="stats shadow">
+                <div class="stat">
+                    <div class="stat-figure text-primary">
+                        <span class="material-symbols-rounded text-2xl">smart_toy</span>
+                    </div>
+                    <div class="stat-title">AI Powered</div>
+                    <div class="stat-value text-primary">GPT-4</div>
+                    <div class="stat-desc">Accurate extraction</div>
+                </div>
+                
+                <div class="stat">
+                    <div class="stat-figure text-secondary">
+                        <span class="material-symbols-rounded text-2xl">speed</span>
+                    </div>
+                    <div class="stat-title">Fast</div>
+                    <div class="stat-value text-secondary">Automated</div>
+                    <div class="stat-desc">↗︎ 90% faster</div>
+                </div>
+            </div>
+        </div>
+        <div class="card shrink-0 w-full max-w-sm shadow-2xl bg-base-100">
+            <form class="card-body" method="post">
+                {% csrf_token %}
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text">Username</span>
+                    </label>
+                    <input type="text" name="username" placeholder="Enter your username" class="input input-bordered" required value="{{ form.username.value|default:'' }}">
+                    {% if form.username.errors %}
+                        <div class="label">
+                            <span class="label-text-alt text-error">{{ form.username.errors.0 }}</span>
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text">Password</span>
+                    </label>
+                    <input type="password" name="password" placeholder="Enter your password" class="input input-bordered" required>
+                    {% if form.password.errors %}
+                        <div class="label">
+                            <span class="label-text-alt text-error">{{ form.password.errors.0 }}</span>
+                        </div>
+                    {% endif %}
+                </div>
+                
+                {% if form.non_field_errors %}
+                    <div class="alert alert-error">
+                        <span class="material-symbols-rounded">error</span>
+                        <span>{{ form.non_field_errors.0 }}</span>
+                    </div>
+                {% endif %}
+                
+                <div class="form-control mt-6">
+                    <button class="btn btn-primary">
+                        <span class="material-symbols-rounded">login</span>
+                        Login
+                    </button>
+                </div>
+                
+                <div class="divider">Need an account?</div>
+                
+                <div class="text-center">
+                    <p class="text-sm text-base-content/70">Contact your administrator to create an account.</p>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %} 

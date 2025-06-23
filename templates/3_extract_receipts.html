@@ -23,7 +23,7 @@
 <div class="mb-6">
     <div class="card bg-base-200 shadow-sm">
         <div class="card-body py-4">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div id="progress-content" class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div class="flex-1">
                     <h3 class="text-lg font-semibold text-base-content mb-2">Extraction Progress</h3>
                     {% if current_file %}
@@ -57,7 +57,7 @@
                         <p class="text-sm text-base-content/60 mb-2 truncate" title="{{ current_file }}">{{ current_file }}</p>
                     </div>
                     <div class="flex-1 bg-base-200 rounded-lg overflow-y-auto min-h-0">
-                        <img src="/core/image/{{ current_file }}/" 
+                        <img src="{% url 'core:serve_image' filename=current_file|urlencode %}" 
                              alt="{{ current_file }}" 
                              class="w-full h-auto"
                              onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
@@ -105,16 +105,14 @@
                                     Extract Image Data
                                 </button>
                                 
-                                {% if files_processed > 0 %}
                                 <button class="btn btn-outline w-full"
                                         hx-post="/core/skip-current-file/"
-                                        hx-target="body"
+                                        hx-target="#main-content"
                                         hx-swap="innerHTML"
                                         hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
                                     <span class="material-symbols-rounded text-xl">skip_next</span>
                                     Skip This File
                                 </button>
-                                {% endif %}
                             </div>
                         </div>
                     </div>
@@ -126,7 +124,7 @@
                             
                             <button class="btn btn-primary w-full" id="start-extraction-btn"
                                     hx-post="/core/start-extraction/"
-                                    hx-target="body"
+                                    hx-target="#main-content"
                                     hx-swap="innerHTML"
                                     hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
                                 <span class="material-symbols-rounded text-xl">play_arrow</span>

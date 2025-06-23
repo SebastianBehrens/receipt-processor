@@ -21,6 +21,7 @@ from core.views import start_page
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("accounts/", include("django.contrib.auth.urls")),
     path("", start_page, name="start_page"),
     path("core/", include("core.urls")),
 ]
