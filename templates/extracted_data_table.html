@@ -99,10 +99,10 @@
                     <!-- Action Buttons -->
                     <div class="flex gap-2 w-full sm:w-auto">
                         <button class="btn btn-outline flex-1 sm:flex-none sm:w-32"
-                                hx-post="/core/extract-current-image/"
+                                hx-post="/app/core/extract-current-image/"
                                 hx-target="#extracted-data-container"
                                 hx-swap="innerHTML"
-                                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                                hx-include="[name=csrfmiddlewaretoken]"
                                 hx-indicator="#loading-indicator">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
@@ -121,10 +121,10 @@
                         
                         {% if show_next_button %}
                         <button class="btn btn-secondary flex-1 sm:flex-none sm:w-32"
-                                hx-post="/core/skip-current-file/"
+                                hx-post="/app/core/skip-current-file/"
                                 hx-target="#main-content"
                                 hx-swap="innerHTML"
-                                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                                hx-include="[name=csrfmiddlewaretoken]">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
                             </svg>
@@ -188,7 +188,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (response.success) {
                 showToast('success', `Extraction confirmed! ${response.item_count} items saved.`);
                 setTimeout(() => {
-                    window.location.href = '/core/step/4/';
+                    window.location.href = '/app/core/step/4/';
                 }, 2000);
             }
         }
@@ -319,7 +319,7 @@ function addNewRow() {
     itemInput.select();
 }
 
-// Confirm extraction and proceed to next file - restored old working approach
+// Confirm extraction and proceed to next file - fixed to work with reverse proxy
 function confirmExtractionAndNext() {
     console.log('confirmExtractionAndNext called');
     
@@ -383,16 +383,14 @@ function confirmExtractionAndNext() {
         Processing...
     `;
     
-    // Send data to backend to store in database (like old version)
+    // Send data to backend to store in database - include CSRF token in form data
     const formData = new FormData();
     formData.append('extracted_data', JSON.stringify(extractedData));
     formData.append('selected_file', '{{ current_file|escapejs }}');
+    formData.append('csrfmiddlewaretoken', document.querySelector('[name=csrfmiddlewaretoken]').value);
     
-    fetch('/core/confirm-extraction/', {
+    fetch('/app/core/confirm-extraction/', {
         method: 'POST',
-        headers: {
-            'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
-        },
         body: formData
     })
     .then(response => response.json())
@@ -402,11 +400,11 @@ function confirmExtractionAndNext() {
             showToast('success', `✅ Extraction saved! ${extractedData.length} items stored successfully.`);
             console.log('Data stored in database:', data);
             
-            // Automatically proceed to next file using targeted HTMX
+            // Automatically proceed to next file using HTMX (no custom headers needed)
             setTimeout(() => {
-                htmx.ajax('POST', '/core/next-extraction-content/', {
-                    headers: {
-                        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
+                htmx.ajax('POST', '/app/core/next-extraction-content/', {
+                    values: {
+                        csrfmiddlewaretoken: document.querySelector('[name=csrfmiddlewaretoken]').value
                     },
                     target: '#main-content',
                     swap: 'innerHTML'

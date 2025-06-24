@@ -89,11 +89,16 @@
             
             <!-- Action Buttons -->
             <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <!-- Hidden CSRF token for HTMX -->
+                <form style="display: none;">
+                    {% csrf_token %}
+                </form>
+                
                 <button class="btn btn-outline btn-lg"
-                        hx-post="/core/restart/"
+                        hx-post="/app/core/restart/"
                         hx-target="body"
                         hx-swap="innerHTML"
-                        hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                        hx-include="[name=csrfmiddlewaretoken]">
                     <span class="material-symbols-rounded text-xl">refresh</span>
                     Process New Receipts
                 </button>

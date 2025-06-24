@@ -99,13 +99,18 @@
             </div>
         </div>
         
+        <!-- Hidden CSRF token for HTMX -->
+        <form style="display: none;">
+            {% csrf_token %}
+        </form>
+        
         <!-- Proceed Button -->
         <div class="text-center">
             <button class="btn btn-primary btn-lg"
-                    hx-post="/core/step/2/"
+                    hx-post="/app/core/step/2/"
                     hx-target="body"
                     hx-swap="innerHTML"
-                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                    hx-include="[name=csrfmiddlewaretoken]">
                 <span class="material-symbols-rounded text-xl">arrow_forward</span>
                 Proceed
             </button>

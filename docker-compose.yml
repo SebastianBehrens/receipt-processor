@@ -1,0 +1,27 @@
+services:
+  receipt-processor:
+    build: .
+    container_name: receipt-processor
+    restart: unless-stopped
+    env_file:
+      - config/.env
+    volumes:
+      # Persistent data storage
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Database directory persistence (removed direct file mount)
+      # - ./db.sqlite3:/app/db.sqlite3
+    networks:
+      - proxy
+    # user: "1002:1002"
+    user: "1000:1000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/admin/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  proxy:
+    external: true 

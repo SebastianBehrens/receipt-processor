@@ -33,15 +33,19 @@ if not SECRET_KEY:
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 
-# Security settings for SSL-only deployment
+# Security settings - SSL is handled by Traefik reverse proxy
 if not DEBUG:
-    # HTTPS/SSL Security
-    SECURE_SSL_REDIRECT = True
+    # SSL termination is handled by Traefik, so no need to redirect
+    # SECURE_SSL_REDIRECT = True  # Disabled - Traefik handles SSL
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     
-    # Cookie Security
+    # Trust proxy headers for SSL termination
+    # This prevents infinite redirects when running behind a reverse proxy
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    
+    # Cookie Security - these can stay since they're about cookie flags
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     
@@ -60,6 +64,35 @@ parsed_url = urlparse(SERVER_ROOT_URL)
 domain = parsed_url.netloc
 ALLOWED_HOSTS = [domain, 'localhost', '127.0.0.1']
 
+# CSRF trusted origins - required for Django 4.0+ with HTTPS
+CSRF_TRUSTED_ORIGINS = [SERVER_ROOT_URL]
+
+# Additional reverse proxy settings for Traefik/Authelia
+# Trust these headers when behind a reverse proxy
+USE_X_FORWARDED_HOST = True
+USE_X_FORWARDED_PORT = True
+
+# Configure CSRF to work better with reverse proxies
+# Allow CSRF validation to work without strict Origin header checking
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SAMESITE = 'Lax'
+
+# For reverse proxy setups, we may need to be more lenient with CSRF
+# This allows CSRF to work when Origin header is not properly forwarded
+CSRF_FAILURE_VIEW = 'django.views.csrf.csrf_failure'
+
+# Internal IPs for reverse proxy setup
+# Django will be more lenient with CSRF checks for these IPs
+INTERNAL_IPS = [
+    '127.0.0.1',
+    'localhost',
+    '172.19.0.4',  # Current Docker internal IP
+    '172.16.0.0/12',  # Docker default bridge network range
+    '172.17.0.0/16',  # Docker default bridge network
+    '172.18.0.0/16',  # Docker compose networks
+    '172.19.0.0/16',  # Docker compose networks
+    '172.20.0.0/16',  # Docker compose networks
+]
 
 # Application definition
 
@@ -102,6 +135,8 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "django.template.context_processors.csrf",
+                "core.context_processors.version_context",
             ],
         },
     },
@@ -116,7 +151,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "NAME": BASE_DIR / "data" / "database" / "db.sqlite3",
     }
 }
 
@@ -143,7 +178,14 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_DIRS = [
+    BASE_DIR / "static",
+]
+
+# Ensure proper MIME types for static files
+STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.ManifestStaticFilesStorage'
 
 # Media files (user uploads)
 MEDIA_URL = "/media/"

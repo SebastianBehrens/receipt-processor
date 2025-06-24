@@ -1,5 +1,10 @@
 <!-- Sort Template -->
 <div class="card-body h-full flex flex-col">
+    <!-- Hidden CSRF token for HTMX -->
+    <form style="display: none;">
+        {% csrf_token %}
+    </form>
+    
     <!-- Progress indicator -->
     <div class="text-center mb-6">
         <h2 class="text-2xl font-bold text-base-content mb-2">Sort Items</h2>
@@ -8,61 +13,69 @@
 
     <!-- Current item display (top 25% of main area, 40% width) -->
     <div class="flex-1 flex flex-col justify-start items-center">
-        <!-- Progress bar -->
-        <div class="w-2/5 mb-4">
-            <progress id="sorting-progress" class="progress progress-primary w-full" value="0" max="100"></progress>
-            <div class="text-center mt-2">
-                <span class="text-sm text-base-content/60">
-                    Item <span id="current-item-number">0</span> of <span id="total-items-number">0</span>
-                </span>
-            </div>
-        </div>
-        
-        <div class="w-2/5 mb-8">
-            <div id="current-item-display" class="card bg-base-300 border-2 border-primary/20 p-8 text-center"
-                 hx-get="/core/get-current-item/"
-                 hx-trigger="load"
-                 hx-target="this"
-                 hx-swap="innerHTML">
-                <div class="loading loading-spinner loading-lg mx-auto"></div>
-                <p class="text-base-content/60 mt-4">Loading item...</p>
+        <!-- Item display card with progress -->
+        <div class="card bg-base-100 shadow-sm w-full max-w-lg mb-8">
+            <div class="card-body p-6">
+                <!-- Progress bar -->
+                <div class="mb-6">
+                    <progress id="sorting-progress" class="progress progress-primary w-full" value="0" max="100"></progress>
+                    <div class="text-center mt-2">
+                        <span class="text-sm text-base-content/60">
+                            Item <span id="current-item-number">0</span> of <span id="total-items-number">0</span>
+                        </span>
+                    </div>
+                </div>
+                
+                <!-- Item display -->
+                <div id="current-item-display" class="w-full"
+                     hx-get="/app/core/get-current-item/"
+                     hx-trigger="load"
+                     hx-target="this"
+                     hx-swap="innerHTML">
+                    <div class="flex flex-col items-center justify-center gap-4">
+                        <div class="loading loading-spinner loading-lg"></div>
+                        <p class="text-base-content/60">Loading item...</p>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <!-- Assignment buttons -->
-        <div id="assignment-buttons" class="flex flex-col sm:flex-row gap-4 justify-center items-center">
-            <button id="sebastian-btn" class="btn btn-primary btn-lg min-w-32" 
-                    hx-post="/core/assign-item/"
-                    hx-vals='{"assignee": "sebastian"}'
-                    hx-target="#main-content"
-                    hx-swap="innerHTML"
-                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
-                    disabled>
-                <span class="material-symbols-rounded text-xl">person</span>
-                Sebastian
-            </button>
-            
-            <button id="both-btn" class="btn btn-accent btn-lg min-w-32"
-                    hx-post="/core/assign-item/"
-                    hx-vals='{"assignee": "both"}'
-                    hx-target="#main-content"
-                    hx-swap="innerHTML"
-                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
-                    disabled>
-                <span class="material-symbols-rounded text-xl">group</span>
-                50/50
-            </button>
-            
-            <button id="iva-btn" class="btn btn-secondary btn-lg min-w-32"
-                    hx-post="/core/assign-item/"
-                    hx-vals='{"assignee": "iva"}'
-                    hx-target="#main-content"
-                    hx-swap="innerHTML"
-                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
-                    disabled>
-                <span class="material-symbols-rounded text-xl">person</span>
-                Iva
-            </button>
+        <!-- Assignment buttons (no visual container) -->
+        <div class="w-full max-w-lg">
+            <div class="flex flex-col sm:flex-row gap-3 justify-center">
+                <button class="btn btn-primary btn-lg flex-1 sm:flex-none sm:w-40" 
+                        id="sebastian-btn"
+                        hx-post="/app/core/assign-item/"
+                        hx-vals='{"assignee": "sebastian"}'
+                        hx-target="#main-content"
+                        hx-swap="innerHTML"
+                        hx-include="[name=csrfmiddlewaretoken]">
+                    <span class="material-symbols-rounded text-xl">person</span>
+                    Sebastian
+                </button>
+                
+                <button class="btn btn-accent btn-lg flex-1 sm:flex-none sm:w-40" 
+                        id="both-btn"
+                        hx-post="/app/core/assign-item/"
+                        hx-vals='{"assignee": "both"}'
+                        hx-target="#main-content"
+                        hx-swap="innerHTML"
+                        hx-include="[name=csrfmiddlewaretoken]">
+                    <span class="material-symbols-rounded text-xl">people</span>
+                    Both
+                </button>
+                
+                <button class="btn btn-secondary btn-lg flex-1 sm:flex-none sm:w-40" 
+                        id="iva-btn"
+                        hx-post="/app/core/assign-item/"
+                        hx-vals='{"assignee": "iva"}'
+                        hx-target="#main-content"
+                        hx-swap="innerHTML"
+                        hx-include="[name=csrfmiddlewaretoken]">
+                    <span class="material-symbols-rounded text-xl">person</span>
+                    Iva
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -81,7 +94,7 @@ function initializeSorting() {
 }
 
 function loadCurrentItem() {
-    fetch('/core/get-current-item/', {
+    fetch('/app/core/get-current-item/', {
         method: 'GET',
         headers: {
             'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
@@ -137,10 +150,10 @@ function showCompletionMessage(message) {
     // Replace buttons with proceed button
     buttons.innerHTML = `
         <button class="btn btn-primary btn-lg"
-                hx-post="/core/step/5/"
+                hx-post="/app/core/step/5/"
                 hx-target="body"
                 hx-swap="innerHTML"
-                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                hx-include="[name=csrfmiddlewaretoken]">
             <span class="material-symbols-rounded text-xl">arrow_forward</span>
             Proceed to Aggregation
         </button>

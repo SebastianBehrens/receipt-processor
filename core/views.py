@@ -978,30 +978,72 @@ def get_current_sort_item(request):
         current_item = unassigned_items.first()
         
         if not current_item:
-            # All items sorted - move directly to aggregation
-            session.current_step = 4
-            session.save()
-            calculate_aggregation(session)
-            logger.info("All items sorted, showing aggregation results")
-            
-            # Return just the aggregate template content with trigger to update sidebar
-            response = render(request, '5_aggregate.html', {
-                'state': {
-                    'current_step': session.current_step,
-                    'receipt_zip': session.receipt_zip_filename,
-                    'payer': session.payer,
-                    'api_costs_total': float(session.api_costs_total),
-                    'current_extraction_index': session.current_extraction_index,
-                    'files_processed': session.files_processed,
-                    'progress_percentage': session.progress_percentage,
-                    'current_sort_index': session.current_sort_index,
-                    'consumption': get_consumption_data(session),
-                    'sort_items': get_sort_items(session),
-                    'aggregation': get_aggregation_data(session),
-                }
-            })
-            response['HX-Trigger'] = 'sortingComplete'
-            return response
+            # Check if there were never any items to sort vs. all items have been sorted
+            if total_items == 0:
+                # No items were ever confirmed for sorting - show appropriate message
+                logger.info("No items available for sorting - no confirmed extractions")
+                return HttpResponse(f"""
+                    <div class="space-y-4 text-center">
+                        <span class="material-symbols-rounded text-6xl text-warning">playlist_remove</span>
+                        <h3 class="text-xl font-bold text-base-content">No Items to Sort</h3>
+                        <p class="text-base-content/60">No receipt items were confirmed during extraction.</p>
+                        <p class="text-sm text-base-content/50">You can go back to extraction or proceed to view the empty results.</p>
+                    </div>
+                    <script>
+                        // Update progress bar and numbers for empty state
+                        document.getElementById('sorting-progress').value = 100;
+                        document.getElementById('current-item-number').textContent = '0';
+                        document.getElementById('total-items-number').textContent = '0';
+                        
+                        // Show proceed button instead of assignment buttons
+                        const buttons = document.querySelector('.flex.flex-col.sm\\:flex-row.gap-3.justify-center');
+                        if (buttons) {{
+                            buttons.innerHTML = `
+                                <button class="btn btn-primary btn-lg"
+                                        hx-post="/app/core/step/5/"
+                                        hx-target="#main-content"
+                                        hx-swap="innerHTML"
+                                        hx-include="[name=csrfmiddlewaretoken]">
+                                    <span class="material-symbols-rounded text-xl">arrow_forward</span>
+                                    Proceed to Results
+                                </button>
+                                <button class="btn btn-outline btn-lg"
+                                        hx-post="/app/core/step/3/"
+                                        hx-target="#main-content"
+                                        hx-swap="innerHTML"
+                                        hx-include="[name=csrfmiddlewaretoken]">
+                                    <span class="material-symbols-rounded text-xl">arrow_back</span>
+                                    Back to Extraction
+                                </button>
+                            `;
+                        }}
+                    </script>
+                """)
+            else:
+                # All items were sorted - move to aggregation
+                session.current_step = 4
+                session.save()
+                calculate_aggregation(session)
+                logger.info("All items sorted, showing aggregation results")
+                
+                # Return just the aggregate template content with trigger to update sidebar
+                response = render(request, '5_aggregate.html', {
+                    'state': {
+                        'current_step': session.current_step,
+                        'receipt_zip': session.receipt_zip_filename,
+                        'payer': session.payer,
+                        'api_costs_total': float(session.api_costs_total),
+                        'current_extraction_index': session.current_extraction_index,
+                        'files_processed': session.files_processed,
+                        'progress_percentage': session.progress_percentage,
+                        'current_sort_index': session.current_sort_index,
+                        'consumption': get_consumption_data(session),
+                        'sort_items': get_sort_items(session),
+                        'aggregation': get_aggregation_data(session),
+                    }
+                })
+                response['HX-Trigger'] = 'sortingComplete'
+                return response
         
         logger.debug(f"Displaying item: {current_item.item_name} (CHF {current_item.price})")
         
@@ -1651,8 +1693,8 @@ def next_extraction_content(request):
                 full_content = response.content.decode('utf-8') + completion_toast
                 response = HttpResponse(full_content)
                 
-                # Add trigger to update the progress steps to final step
-                response['HX-Trigger'] = 'sortingComplete'
+                # Add trigger to update the progress steps
+                response['HX-Trigger'] = 'extractionComplete'
                 return response
             else:
                 # No confirmed items - this shouldn't happen
@@ -1711,27 +1753,23 @@ def next_extraction_content(request):
         logger.error(f"Failed to get next extraction content: {str(e)}")
         return HttpResponse(f'<div class="alert alert-error">Failed to advance: {str(e)}</div>', status=500)
 
-@login_required
-@require_GET
-def authelia_logout(request):
-    """Logout from Django and redirect to Authelia logout."""
-    from django.contrib.auth import logout
-    from django.shortcuts import redirect
-    from django.conf import settings
-    
-    logout(request)
-    authelia_logout_url = getattr(settings, 'AUTHELIA_LOGOUT_URL', '/accounts/login/')
-    return redirect(authelia_logout_url)
-
 @require_GET
 def custom_login(request):
-    """Custom login view that provides Authelia context."""
+    """Custom login view."""
     # If user is already authenticated, redirect to home
     if request.user.is_authenticated:
         return redirect('/')
     
-    context = {
-        'authelia_app_url': settings.AUTHELIA_APP_URL,
-    }
-    
-    return render(request, 'registration/login.html', context)
+    return render(request, 'registration/login.html')
+
+@login_required
+@require_GET
+def simple_logout(request):
+    """Simple logout view that accepts GET requests."""
+    from django.contrib.auth import logout
+    logout(request)
+    return redirect('/')
+
+def health_check(request):
+    """Simple health check endpoint."""
+    return JsonResponse({'status': 'ok'})

@@ -48,12 +48,17 @@ class AutheliaRemoteUserBackend(RemoteUserBackend):
             self.configure_user(request, user)
         return user
 
-    def configure_user(self, request, user):
+    def configure_user(self, request, user, created=None):
         """
         Complete the user from extra request.META information.
         Updates user data from Authelia headers.
+        
+        Args:
+            request: The HTTP request object
+            user: The Django user object
+            created: Optional boolean indicating if user was just created (Django 4.2+)
         """
-        logger.debug(f"Configuring user: {user.username}")
+        logger.debug(f"Configuring user: {user.username} (created={created})")
         
         # Update display name from Remote-Name header
         if self.header_name in request.META:

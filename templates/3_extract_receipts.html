@@ -19,6 +19,11 @@
 }
 </style>
 
+<!-- Hidden CSRF token for HTMX -->
+<form style="display: none;">
+    {% csrf_token %}
+</form>
+
 <!-- Progress Section -->
 <div class="mb-6">
     <div class="card bg-base-200 shadow-sm">
@@ -95,23 +100,36 @@
                             
                             <div class="flex flex-col gap-4">
                                 <button class="btn btn-primary w-full" id="extract-btn"
-                                        hx-post="/core/extract-current-image/"
+                                        hx-post="/app/core/extract-current-image/"
                                         hx-target="#extracted-data-container"
                                         hx-swap="innerHTML"
-                                        hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                                        hx-include="[name=csrfmiddlewaretoken]"
                                         hx-on:click="showLoadingState()"
-                                        hx-on:htmx:after-request="hideLoadingState()">
+                                        hx-on:htmx:after-request="hideLoadingState()"
+                                        hx-indicator="#loading-indicator">
                                     <span class="material-symbols-rounded text-xl">auto_awesome</span>
                                     Extract Image Data
                                 </button>
                                 
-                                <button class="btn btn-outline w-full"
-                                        hx-post="/core/skip-current-file/"
+                                <!-- Re-extract Button -->
+                                <button class="btn btn-outline btn-sm"
+                                        hx-post="/app/core/extract-current-image/"
+                                        hx-target="#extracted-data-container"
+                                        hx-swap="innerHTML"
+                                        hx-include="[name=csrfmiddlewaretoken]"
+                                        hx-indicator="#loading-indicator">
+                                    <span class="material-symbols-rounded text-sm">refresh</span>
+                                    Re-extract
+                                </button>
+                                
+                                <!-- Skip File Button -->
+                                <button class="btn btn-warning btn-sm"
+                                        hx-post="/app/core/skip-current-file/"
                                         hx-target="#main-content"
                                         hx-swap="innerHTML"
-                                        hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
-                                    <span class="material-symbols-rounded text-xl">skip_next</span>
-                                    Skip This File
+                                        hx-include="[name=csrfmiddlewaretoken]">
+                                    <span class="material-symbols-rounded text-sm">skip_next</span>
+                                    Skip & Next
                                 </button>
                             </div>
                         </div>
@@ -123,10 +141,10 @@
                             <p class="text-base-content/60 mb-8">Begin processing the uploaded receipt images</p>
                             
                             <button class="btn btn-primary w-full" id="start-extraction-btn"
-                                    hx-post="/core/start-extraction/"
+                                    hx-post="/app/core/start-extraction/"
                                     hx-target="#main-content"
                                     hx-swap="innerHTML"
-                                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                                    hx-include="[name=csrfmiddlewaretoken]">
                                 <span class="material-symbols-rounded text-xl">play_arrow</span>
                                 Start Extraction Process
                             </button>

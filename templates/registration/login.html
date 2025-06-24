@@ -8,17 +8,16 @@
         <div class="text-center lg:text-left lg:ml-8">
             <h1 class="text-5xl font-bold">🧾 Receipt Processor</h1>
             <p class="py-6">
-                Welcome to the Receipt Processor application. Choose your preferred login method
-                to access the application.
+                Welcome to the Receipt Processor application. Choose your preferred access method.
             </p>
             <div class="stats shadow">
                 <div class="stat">
                     <div class="stat-figure text-primary">
-                        <span class="material-symbols-rounded text-2xl">security</span>
+                        <span class="material-symbols-rounded text-2xl">receipt_long</span>
                     </div>
-                    <div class="stat-title">Authentication</div>
-                    <div class="stat-value text-primary">Authelia</div>
-                    <div class="stat-desc">Single Sign-On</div>
+                    <div class="stat-title">Process</div>
+                    <div class="stat-value text-primary">Receipts</div>
+                    <div class="stat-desc">Efficiently & Securely</div>
                 </div>
             </div>
         </div>
@@ -26,7 +25,7 @@
             <div class="card-body text-center">
                 <h2 class="card-title justify-center mb-4">Access Application</h2>
                 <p class="text-base-content/70 mb-6">
-                    Sign in to access your receipt processing workspace.
+                    Choose how you want to access the application.
                 </p>
                 
                 {% if messages %}
@@ -38,23 +37,15 @@
                     {% endfor %}
                 {% endif %}
                 
-                <!-- Main Authelia Access Button -->
-                <a href="{{ authelia_app_url }}" class="btn btn-primary btn-lg w-full mb-4">
-                    <span class="material-symbols-rounded">login</span>
-                    Sign in with Authelia
+                <!-- Main Application Access Button -->
+                <a href="/app/" class="btn btn-primary btn-lg w-full mb-8">
+                    <span class="material-symbols-rounded">receipt_long</span>
+                    Access Receipt Processor
                 </a>
-                
-                <div class="alert alert-info mb-4 text-left">
-                    <span class="material-symbols-rounded text-sm">info</span>
-                    <div class="text-xs">
-                        <p><strong>Authelia Login:</strong> Single sign-on with your organization account</p>
-                        <p class="mt-1">Will redirect to the protected application area</p>
-                    </div>
-                </div>
                 
                 <div class="divider">Administrator Access</div>
                 
-                <a href="/accounts/login/django/" class="btn btn-outline btn-sm w-full">
+                <a href="/admin/" class="btn btn-outline btn-sm w-full">
                     <span class="material-symbols-rounded">admin_panel_settings</span>
                     Django Admin Login
                 </a>

@@ -1,0 +1,44 @@
+  http:
+    routers:
+      # Route for public paths (root, admin, accounts, static)
+      recproc-public:
+        rule: "Host(`receipts.epsian.ch`) && (Path(`/`) || PathPrefix(`/accounts`) || PathPrefix(`/admin`) || PathPrefix(`/static`))"
+        entryPoints:
+          - "https"
+        service: "recproc"
+        middlewares:
+          - "recproc-unprotected-ratelimit"
+        tls:
+          certResolver: myresolver
+
+      # Route for protected app area
+      recproc-protected:
+        rule: "Host(`receipts.epsian.ch`) && PathPrefix(`/app`)"
+        entryPoints:
+          - "https"
+        service: "recproc"
+        middlewares:
+          - "recproc-auth-chain"
+        tls:
+          certResolver: myresolver
+
+    middlewares:
+      recproc-unprotected-ratelimit:
+        rateLimit:
+          average: 15
+          burst: 20
+          period: 20m
+
+      recproc-auth-chain:
+        chain:
+          middlewares:
+            - crowdsec-bouncer
+            - authelia
+
+    services:
+      recproc:
+        loadBalancer:
+          servers:
+            # Fix the service URL - use container name if running in Docker
+            - url: "http://receipt-processor:8000"
+            # - url: "http://172.17.0.1:8000"

@@ -42,13 +42,20 @@
         </a>
     </div>
     <div class="navbar-end gap-2">
+        <!-- Hidden CSRF token for HTMX -->
+        {% if user.is_authenticated %}
+        <form style="display: none;">
+            {% csrf_token %}
+        </form>
+        {% endif %}
+        
         <!-- Restart Button (only show if user is authenticated) -->
         {% if user.is_authenticated %}
         <button class="btn btn-ghost btn-sm" title="Restart Process"
-                hx-post="/core/restart/"
+                hx-post="/app/core/restart/"
                 hx-target="body"
                 hx-swap="innerHTML"
-                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                hx-include="[name=csrfmiddlewaretoken]">
             <span class="material-symbols-rounded text-xl">restart_alt</span>
         </button>
         {% endif %}
@@ -58,7 +65,7 @@
             <span class="material-symbols-rounded text-xl" id="theme-icon">dark_mode</span>
         </button>
         
-        <div class="badge badge-neutral hidden sm:inline-flex">v1.0.0</div>
+        <div class="badge badge-neutral hidden sm:inline-flex">v{{ APPLICATION_VERSION }}</div>
         
         <!-- User Section -->
         {% if user.is_authenticated %}
@@ -81,7 +88,7 @@
                     </a>
                 </li>
                 <li>
-                    <a href="{% url 'core:authelia_logout' %}">
+                    <a href="{% url 'core:logout' %}">
                         <span class="material-symbols-rounded">power_settings_new</span>
                         Logout
                     </a>
