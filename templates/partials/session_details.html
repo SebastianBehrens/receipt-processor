@@ -1,0 +1,44 @@
+{% if receipts %}
+<div class="space-y-6">
+    {% for receipt in receipts %}
+    <div class="card bg-base-300 border border-base-content/10">
+        <div class="card-body">
+            <div class="flex flex-col lg:flex-row gap-6">
+                <div class="lg:w-1/3">
+                    <img
+                        src="{% url 'core:serve_session_image' session.id receipt.filename %}"
+                        alt="Receipt {{ receipt.filename }}"
+                        class="rounded-lg w-full max-h-80 object-contain bg-base-100"
+                    >
+                    <p class="text-sm text-base-content/60 mt-2 break-all">{{ receipt.filename }}</p>
+                </div>
+                <div class="lg:w-2/3 overflow-x-auto">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th>Price</th>
+                                <th>Sorted as</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for line in receipt.items %}
+                            <tr>
+                                <td>{{ line.item }}</td>
+                                <td class="font-mono">CHF {{ line.price }}</td>
+                                <td>
+                                    <span class="badge {{ line.assignee_badge }}">{{ line.assignee_label }}</span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-base-content/60 text-center py-4">No extracted receipts to show.</p>
+{% endif %}

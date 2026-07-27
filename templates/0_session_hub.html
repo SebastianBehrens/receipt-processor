@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block title %}Receipt Processor — Sessions{% endblock %}
+
+{% block content %}
+{% include "partials/app_navbar.html" %}
+
+<div class="max-w-4xl mx-auto space-y-8">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+            <h1 class="text-3xl font-bold text-base-content">Your Sessions</h1>
+            <p class="text-base-content/60 mt-2">Resume paused work or review completed receipt runs.</p>
+        </div>
+        <form method="post" action="{% url 'core:create_session' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary btn-lg">
+                <span class="material-symbols-rounded">add</span>
+                Start New Session
+            </button>
+        </form>
+    </div>
+
+    <div class="card bg-base-200 shadow-sm">
+        <div class="card-body">
+            <h2 class="card-title text-lg">In Progress</h2>
+            {% if in_progress_sessions %}
+            <div class="overflow-x-auto">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Session</th>
+                            <th>Step</th>
+                            <th>Last updated</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for session in in_progress_sessions %}
+                        <tr>
+                            <td>
+                                <div class="font-medium">{{ session.title|default:"Untitled session" }}</div>
+                                {% if session.payer %}
+                                <div class="text-sm text-base-content/60">Paid by {{ session.payer }}</div>
+                                {% endif %}
+                            </td>
+                            <td><span class="badge badge-primary badge-outline">{{ session.get_current_step_label }}</span></td>
+                            <td class="text-sm text-base-content/60">{{ session.updated_at|date:"d M Y, H:i" }}</td>
+                            <td class="text-right">
+                                <form method="post" action="{% url 'core:resume_session' session.id %}" class="inline">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-primary btn-sm">Resume</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-base-content/60">No in-progress sessions. Start a new one to process receipts.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card bg-base-200 shadow-sm">
+        <div class="card-body">
+            <h2 class="card-title text-lg">Completed</h2>
+            {% if completed_sessions %}
+            <div class="overflow-x-auto">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Session</th>
+                            <th>Completed</th>
+                            <th>Total</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for session in completed_sessions %}
+                        <tr>
+                            <td>
+                                <div class="font-medium">{{ session.title|default:"Untitled session" }}</div>
+                                {% if session.payer %}
+                                <div class="text-sm text-base-content/60">Paid by {{ session.payer }}</div>
+                                {% endif %}
+                            </td>
+                            <td class="text-sm text-base-content/60">
+                                {{ session.completed_at|default:session.updated_at|date:"d M Y, H:i" }}
+                            </td>
+                            <td class="font-mono">
+                                {% if session.get_grand_total %}
+                                CHF {{ session.get_grand_total|floatformat:2 }}
+                                {% else %}
+                                —
+                                {% endif %}
+                            </td>
+                            <td class="text-right">
+                                <a href="{% url 'core:session_review' session.id %}" class="btn btn-outline btn-sm">View</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-base-content/60">Completed sessions will appear here after aggregation.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    const themeIcon = document.getElementById('theme-icon');
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    if (themeIcon) {
+        themeIcon.textContent = savedTheme === 'light' ? 'light_mode' : 'dark_mode';
+    }
+});
+</script>
+{% endblock %}

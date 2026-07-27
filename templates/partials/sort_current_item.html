@@ -1,0 +1,15 @@
+<div class="space-y-4">
+    <h3 class="text-xl font-bold text-base-content">{{ sort_display.current_item.item }}</h3>
+    <p class="text-2xl font-mono text-primary">CHF {{ sort_display.current_item.price }}</p>
+    <p class="text-sm text-base-content/60">From: {{ sort_display.current_item.source_file|default:"" }}</p>
+</div>
+{% if update_controls %}
+<script>
+    document.getElementById('sorting-progress').value = {{ sort_display.progress_percentage }};
+    document.getElementById('current-item-number').textContent = '{{ sort_display.current_number }}';
+    document.getElementById('total-items-number').textContent = '{{ sort_display.total_items }}';
+    document.getElementById('sebastian-btn').disabled = false;
+    document.getElementById('iva-btn').disabled = false;
+    document.getElementById('both-btn').disabled = false;
+</script>
+{% endif %}

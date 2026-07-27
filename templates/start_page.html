@@ -2,11 +2,10 @@
 
 {% block title %}HTMX Receipt Processor - Start{% endblock %}
 
-{% block content %}
-<!-- Success Toast (shown when upload succeeds) -->
+{% block toasts %}
 {% if show_success_toast %}
-<div class="toast toast-top toast-center">
-    <div class="alert alert-success">
+<div class="toast toast-top toast-center z-[9999]" id="success-toast">
+    <div class="alert alert-success shadow-lg">
         <span>ZIP file uploaded successfully!</span>
     </div>
 </div>
@@ -17,86 +16,14 @@
     }, 5000);
 </script>
 {% endif %}
+{% endblock %}
 
-<!-- Navbar -->
-<div class="navbar bg-base-100 mb-4 lg:mb-6">
-    <div class="navbar-start">
-        <a href="/" class="btn btn-ghost text-xl font-bold text-primary hover:text-primary-focus">
-            <span class="mr-2">🧾</span>
-            <span class="hidden sm:inline">Receipt Processor</span>
-            <span class="sm:hidden">Receipts</span>
-        </a>
-    </div>
-    <div class="navbar-end gap-2">
-        <!-- Restart Button -->
-        <button class="btn btn-ghost btn-sm" title="Restart Process"
-                hx-post="/core/restart/"
-                hx-target="body"
-                hx-swap="innerHTML"
-                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
-            <span class="material-symbols-rounded text-xl">restart_alt</span>
-        </button>
-        
-        <button class="btn btn-ghost btn-sm" title="Toggle Dark Mode" id="theme-toggle" 
-                hx-on:click="toggleDarkMode()">
-            <span class="material-symbols-rounded text-xl" id="theme-icon">dark_mode</span>
-        </button>
-        
-        <div class="badge badge-neutral hidden sm:inline-flex">v1.0.0</div>
-        
-        <!-- User Section -->
-        <div class="flex items-center gap-2">
-            <div class="avatar placeholder">
-                <div class="bg-primary text-primary-content rounded-full w-8">
-                    <span class="text-xs">
-                        {% if user.is_authenticated %}
-                            {{ user.first_name.0|default:user.username.0|upper }}{{ user.last_name.0|upper }}
-                        {% else %}
-                            U
-                        {% endif %}
-                    </span>
-                </div>
-            </div>
-            <span class="text-sm text-base-content hidden sm:inline">
-                {% if user.is_authenticated %}
-                    {% if user.first_name and user.last_name %}
-                        {{ user.first_name }} {{ user.last_name }}
-                    {% elif user.first_name %}
-                        {{ user.first_name }}
-                    {% else %}
-                        {{ user.username }}
-                    {% endif %}
-                {% else %}
-                    Guest
-                {% endif %}
-            </span>
-            {% if user.is_authenticated %}
-                <div class="dropdown dropdown-end">
-                    <div tabindex="0" role="button" class="btn btn-ghost btn-circle avatar">
-                        <div class="w-10 rounded-full bg-primary text-primary-content flex items-center justify-center">
-                            <span class="text-sm font-bold">{{ user.first_name|first|default:user.username|first }}</span>
-                        </div>
-                    </div>
-                    <ul tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-100 rounded-box w-52">
-                        <li><a class="justify-between">
-                            {{ user.get_full_name|default:user.username }}
-                            <span class="badge">{{ user.username }}</span>
-                        </a></li>
-                        <li><a href="{% url 'core:logout' %}">Logout</a></li>
-                    </ul>
-                </div>
-            {% else %}
-                <a href="{% url 'core:login' %}" class="btn btn-primary">Login</a>
-            {% endif %}
-        </div>
-    </div>
-</div>
+{% block content %}
+{% include "partials/app_navbar.html" with show_sessions_nav=True %}
 
 {% if current_step == 2 and extracted_files %}
-<!-- Full-width layout for extraction step -->
 <div class="min-h-[500px] lg:min-h-[600px]">
-    <!-- Horizontal Progress Steps -->
-    <div class="card bg-base-200 shadow-sm mb-4 lg:mb-6">
+    <div class="card bg-base-200 shadow-sm mb-4 lg:mb-6 wizard-steps">
         <div class="card-body py-3 lg:py-4">
             <ul class="steps w-full">
                 <li class="step {% if current_step == 0 %}step-primary{% endif %}">
@@ -122,17 +49,14 @@
             </ul>
         </div>
     </div>
-    
-    <!-- Main Content Area -->
+
     <div id="main-content" class="card bg-base-200 shadow-sm">
         {% include "3_extract_receipts.html" with current_file=state.current_file total_files=state.extracted_files|length files_processed=state.files_processed progress_percentage=state.progress_percentage %}
     </div>
 </div>
 {% else %}
-<!-- Full-width layout (for all other steps) -->
 <div class="min-h-[500px] lg:min-h-[600px]">
-    <!-- Horizontal Progress Steps -->
-    <div class="card bg-base-200 shadow-sm mb-4 lg:mb-6">
+    <div class="card bg-base-200 shadow-sm mb-4 lg:mb-6 wizard-steps">
         <div class="card-body py-3 lg:py-4">
             <ul class="steps w-full">
                 <li class="step {% if current_step == 0 %}step-primary{% endif %}">
@@ -158,10 +82,8 @@
             </ul>
         </div>
     </div>
-    
-    <!-- Main Content Area -->
+
     <div id="main-content" class="card bg-base-200 shadow-sm">
-        <!-- Content will be loaded here via HTMX -->
         {% if current_step == 0 %}
             {% include "1_read_the_docs.html" %}
         {% elif current_step == 1 %}
@@ -169,7 +91,7 @@
         {% elif current_step == 2 %}
             {% include "3_extract_receipts.html" with current_file=state.current_file total_files=state.extracted_files|length files_processed=state.files_processed progress_percentage=state.progress_percentage %}
         {% elif current_step == 3 %}
-            {% include "4_sort.html" with state=state %}
+            {% include "4_sort.html" with state=state sort_display=sort_display %}
         {% elif current_step == 4 %}
             {% include "5_aggregate.html" with state=state %}
         {% endif %}
@@ -178,90 +100,26 @@
 {% endif %}
 
 <script>
-// Initialize theme on page load
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('DOM loaded, initializing theme...');
-    initializeTheme();
+    window.scrollTo(0, 0);
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    const themeIcon = document.getElementById('theme-icon');
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    if (themeIcon) {
+        themeIcon.textContent = savedTheme === 'light' ? 'light_mode' : 'dark_mode';
+    }
 });
 
-function initializeTheme() {
-    console.log('Initializing theme...');
-    // Get saved theme from localStorage or default to light
-    const savedTheme = localStorage.getItem('theme') || 'light';
-    const htmlElement = document.documentElement;
-    const themeIcon = document.getElementById('theme-icon');
-    
-    console.log('Current saved theme:', savedTheme);
-    console.log('Theme icon element:', themeIcon);
-    
-    // Apply the theme
-    htmlElement.setAttribute('data-theme', savedTheme);
-    
-    // Update icon based on current theme
-    if (savedTheme === 'light') {
-        if (themeIcon) themeIcon.textContent = 'light_mode';
-    } else {
-        if (themeIcon) themeIcon.textContent = 'dark_mode';
-    }
-    
-    console.log('Theme initialized to:', savedTheme);
-}
-
-function toggleDarkMode() {
-    console.log('toggleDarkMode called!');
-    
-    const htmlElement = document.documentElement;
-    const themeIcon = document.getElementById('theme-icon');
-    const currentTheme = htmlElement.getAttribute('data-theme') || 'light';
-    
-    console.log('Current theme:', currentTheme);
-    console.log('Theme icon element:', themeIcon);
-    
-    // Toggle theme
-    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
-    console.log('Switching to theme:', newTheme);
-    
-    // Apply new theme
-    htmlElement.setAttribute('data-theme', newTheme);
-    
-    // Save to localStorage
-    localStorage.setItem('theme', newTheme);
-    console.log('Saved theme to localStorage:', newTheme);
-    
-    // Update icon
-    if (newTheme === 'dark') {
-        if (themeIcon) themeIcon.textContent = 'light_mode';
-    } else {
-        if (themeIcon) themeIcon.textContent = 'dark_mode';
-    }
-    
-    // Add a subtle animation effect
-    const button = document.getElementById('theme-toggle');
-    if (button) {
-        button.classList.add('animate-pulse');
-        setTimeout(() => {
-            button.classList.remove('animate-pulse');
-        }, 200);
-    }
-    
-    console.log('Theme toggle complete. New theme:', newTheme);
-    
-    // Force a visual change to test if anything is working
-    document.body.style.transition = 'background-color 0.3s ease';
-}
-
-// Handle completion trigger from backend
 document.addEventListener('htmx:afterRequest', function(e) {
     if (e.detail.xhr.getResponseHeader('HX-Trigger') === 'sortingComplete') {
-        // Update the horizontal progress bar to show aggregate step as active
         const steps = document.querySelectorAll('.step');
         steps.forEach((step, index) => {
             step.classList.remove('step-primary');
-            if (index === 4) { // Aggregate step (0-based index)
+            if (index === 4) {
                 step.classList.add('step-primary');
             }
         });
     }
 });
 </script>
-{% endblock %} 
+{% endblock %}

@@ -9,7 +9,9 @@ import ast
 import json
 import logging
 import traceback
+import mimetypes
 from django.shortcuts import render, redirect
+from django.urls import reverse
 from django.http import HttpResponse, FileResponse, JsonResponse
 from django.conf import settings
 from django.views.decorators.http import require_GET, require_POST
@@ -17,10 +19,26 @@ from django.utils.text import get_valid_filename
 from django.contrib.auth.decorators import login_required
 from dotenv import load_dotenv
 
+from .models import ProcessingSession
 from .utils import (
-    get_user_state, require_auth, get_files_by_status, get_next_tbd_file,
-    update_file_status, get_total_files, get_processed_files_count,
-    ensure_consumption_initialized
+    require_auth,
+    require_active_session,
+    get_files_by_status,
+    get_next_tbd_file,
+    update_file_status,
+    get_total_files,
+    get_processed_files_count,
+    ensure_consumption_initialized,
+    store_extracted_data,
+    create_processing_session,
+    set_active_session,
+    clear_active_session,
+    get_user_session_or_404,
+    get_image_path,
+    build_receipt_details,
+    normalize_price,
+    prepare_sort_display,
+    STEP_LABELS,
 )
 
 # Load environment variables from config/.env
@@ -29,20 +47,11 @@ load_dotenv(Path(settings.BASE_DIR) / 'config' / '.env')
 # Set up logging
 logger = logging.getLogger(__name__)
 
-def unzip_receipts(zip_filename):
+def unzip_receipts(zip_path, extract_dir):
     """Extract the uploaded ZIP file and return list of extracted files."""
-    if not zip_filename:
+    if not zip_path or not zip_path.exists():
         return []
-    
-    # Get the base directory for uploads (updated to 0_uploaded)
-    upload_dir = Path(settings.BASE_DIR) / 'data' / '0_uploaded'
-    zip_path = upload_dir / zip_filename
-    
-    # Create extraction directory in 1_unzipped (same name as zip without extension)
-    extract_dir_name = Path(zip_filename).stem
-    extract_dir = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name
-    
-    # Create extraction directory if it doesn't exist
+
     extract_dir.mkdir(parents=True, exist_ok=True)
     
     extracted_files = []
@@ -74,25 +83,109 @@ def unzip_receipts(zip_filename):
     
     return extracted_files
 
-
 def health(request):
     """Unauthenticated health check for Swarm/Traefik probes."""
     return HttpResponse("ok", content_type="text/plain")
 
 
-@require_auth
-def start_page(request):
-    """Render the start page for the HTMX Receipt Processor."""
+def _wizard_context(request):
     user_state = request.user_state
-    return render(request, 'start_page.html', {
+    context = {
         'current_step': user_state.get('current_step', 0),
         'extracted_files': user_state.get('extracted_files', []),
         'state': user_state.get_state(),
-        'user': request.user
+        'user': request.user,
+        'active_session': request.active_session,
+    }
+    if user_state.get('current_step') == 3:
+        context['sort_display'] = prepare_sort_display(user_state)
+    return context
+
+
+@require_auth
+def session_hub(request):
+    """List in-progress and completed processing sessions."""
+    in_progress_sessions = ProcessingSession.objects.filter(
+        user=request.user,
+        status=ProcessingSession.STATUS_IN_PROGRESS,
+    )
+    completed_sessions = ProcessingSession.objects.filter(
+        user=request.user,
+        status=ProcessingSession.STATUS_COMPLETED,
+    )
+    return render(request, '0_session_hub.html', {
+        'user': request.user,
+        'in_progress_sessions': in_progress_sessions,
+        'completed_sessions': completed_sessions,
+        'step_labels': STEP_LABELS,
     })
+
 
 @require_POST
 @require_auth
+def create_session(request):
+    """Create a new in-progress session and open the wizard."""
+    session = create_processing_session(request.user)
+    set_active_session(request, session)
+    return redirect('core:start_page')
+
+
+@require_POST
+@require_auth
+def resume_session(request, session_id):
+    """Resume an in-progress session at its saved step."""
+    session = get_user_session_or_404(request, session_id)
+    if session.status == ProcessingSession.STATUS_COMPLETED:
+        return redirect('core:session_review', session_id=session.id)
+    set_active_session(request, session)
+    return redirect('core:start_page')
+
+
+@require_auth
+def session_review(request, session_id):
+    """Read-only review of a completed session."""
+    session = get_user_session_or_404(request, session_id)
+    state = session.state or ProcessingSession.default_state()
+    return render(request, 'session_review.html', {
+        'user': request.user,
+        'session': session,
+        'state': state,
+        'receipts': build_receipt_details(state),
+    })
+
+
+@require_GET
+@require_auth
+def serve_session_image(request, session_id, filename):
+    """Serve a receipt image for a specific session (review or active)."""
+    session = get_user_session_or_404(request, session_id)
+    extract_dir = session.get_unzipped_dir().resolve()
+
+    try:
+        image_path = (extract_dir / filename).resolve()
+        image_path.relative_to(extract_dir)
+    except ValueError:
+        logger.warning("Blocked path traversal for session image: %s", filename)
+        return HttpResponse("Invalid path", status=404)
+
+    if not image_path.exists() or not image_path.is_file():
+        return HttpResponse("File not found", status=404)
+
+    content_type, _ = mimetypes.guess_type(str(image_path))
+    return FileResponse(
+        open(image_path, 'rb'),
+        content_type=content_type or 'application/octet-stream',
+    )
+
+
+@require_active_session
+def start_page(request):
+    """Render the start page for the HTMX Receipt Processor."""
+    return render(request, 'start_page.html', _wizard_context(request))
+
+
+@require_POST
+@require_active_session
 def step_view(request, step_number):
     """Main view to handle different steps of the receipt processing workflow."""
     logger.info(f"Step view requested: {step_number} for user {request.user.username}")
@@ -146,18 +239,15 @@ def step_view(request, step_number):
         
         logger.debug(f"Extraction progress: {files_processed}/{total_files} ({progress_percentage}%)")
     
-    # Create context with state information
-    context = {
-        'current_step': user_state.get('current_step', 0),
-        'extracted_files': user_state.get('extracted_files', []),
-        'state': user_state.get_state(),
-        'user': request.user
-    }
-    
+    context = _wizard_context(request)
+    context['current_step'] = user_state.get('current_step', 0)
+    context['extracted_files'] = user_state.get('extracted_files', [])
+
     logger.debug(f"Rendering step {step_number} with context keys: {list(context.keys())}")
     return render(request, 'start_page.html', context)
 
 @require_POST
+@require_active_session
 def upload_files(request):
     """Handle file upload and return toast notification."""
     if request.FILES.get('receipt_file'):
@@ -169,7 +259,7 @@ def upload_files(request):
         # Check if file is a ZIP
         if not uploaded_file.name.lower().endswith('.zip'):
             return HttpResponse(f"""
-                <div class="toast toast-end" id="error-toast">
+                <div class="toast toast-end z-[9999]" id="error-toast">
                     <div class="alert alert-error">
                         <span>Please select a ZIP file. Try a different file.</span>
                     </div>
@@ -187,7 +277,7 @@ def upload_files(request):
             zipfile.ZipFile(uploaded_file)
         except zipfile.BadZipFile:
             return HttpResponse(f"""
-                <div class="toast toast-end" id="error-toast">
+                <div class="toast toast-end z-[9999]" id="error-toast">
                     <div class="alert alert-error">
                         <span>Invalid ZIP file. Please try a different file.</span>
                     </div>
@@ -200,43 +290,33 @@ def upload_files(request):
                 </script>
             """, status=400)
         
-        # Create upload directory if it doesn't exist
-        upload_dir = Path(settings.BASE_DIR) / 'data' / '0_uploaded'
+        # Save the file to the active session directory
+        session = request.active_session
+        upload_dir = session.get_upload_dir()
         upload_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Sanitize the filename to prevent security issues
         filename = get_valid_filename(uploaded_file.name)
         file_path = upload_dir / filename
-        
-        # Save the file using Django's proper upload handling
+
         with open(file_path, 'wb+') as destination:
             for chunk in uploaded_file.chunks():
                 destination.write(chunk)
-        
-        # Store filename and payer in state
+
         user_state = request.user_state
         user_state['receipt_zip'] = filename
         user_state['payer'] = payer
-        
-        # Extract the ZIP file and get list of files
-        extracted_files = unzip_receipts(filename)
+
+        extracted_files = unzip_receipts(file_path, session.get_unzipped_dir())
         user_state['extracted_files'] = extracted_files
-        
-        # Advance to next step
-        user_state['current_step'] = 2  # Move to Extract step
-        
-        # Return the full page with updated state and success toast
-        return render(request, 'start_page.html', {
-            'current_step': user_state['current_step'],
-            'show_success_toast': True,
-            'extracted_files': user_state.get('extracted_files', []),
-            'state': user_state.get_state(),
-            'user': request.user
-        })
+
+        user_state['current_step'] = 2
+
+        context = _wizard_context(request)
+        context['show_success_toast'] = True
+        return render(request, 'start_page.html', context)
     
     # If no file uploaded, return error toast
     return HttpResponse("""
-        <div class="toast toast-end" id="error-toast">
+        <div class="toast toast-end z-[9999]" id="error-toast">
             <div class="alert alert-error">
                 <span>No file selected. Please try again.</span>
             </div>
@@ -250,41 +330,22 @@ def upload_files(request):
     """, status=400)
 
 @require_POST
+@require_auth
 def restart(request):
-    """Reset the state and return to step 1."""
-    # Reset the global state
-    user_state = request.user_state
-    user_state['current_step'] = 0
-    
-    # Clear any stored data
-    if 'upload_folder' in user_state:
-        del user_state['upload_folder']
-    if 'receipt_zip' in user_state:
-        del user_state['receipt_zip']
-    if 'extracted_files' in user_state:
-        del user_state['extracted_files']
-    if 'selected_file' in user_state:
-        del user_state['selected_file']
-    if 'payer' in user_state:
-        del user_state['payer']
-    if 'consumption' in user_state:
-        del user_state['consumption']
-    if 'sort_items' in user_state:
-        del user_state['sort_items']
-    if 'current_sort_index' in user_state:
-        del user_state['current_sort_index']
-    if 'api_costs_total' in user_state:
-        del user_state['api_costs_total']
-    
-    # Render the full page with reset state
-    return render(request, 'start_page.html', {
-        'current_step': user_state['current_step'],
-        'extracted_files': user_state.get('extracted_files', []),
-        'state': user_state.get_state(),
-        'user': request.user
-    })
+    """Leave the wizard and return to the session hub."""
+    if request.user_state and request.active_session:
+        if request.user_state.get('aggregation'):
+            request.active_session.mark_completed()
+    clear_active_session(request)
+    hub_url = reverse('core:session_hub')
+    if request.headers.get('HX-Request'):
+        response = HttpResponse(status=200)
+        response['HX-Redirect'] = hub_url
+        return response
+    return redirect(hub_url)
 
 @require_GET
+@require_active_session
 def get_step_template(request, step_number):
     """Return just the template content for HTMX updates."""
     if step_number == 1:
@@ -295,7 +356,8 @@ def get_step_template(request, step_number):
         return render(request, '3_extract_receipts.html')
     elif step_number == 4:
         return render(request, '4_sort.html', {
-            'state': request.user_state.get_state()
+            'state': request.user_state.get_state(),
+            'sort_display': prepare_sort_display(request.user_state),
         })
     elif step_number == 5:
         return render(request, '5_aggregate.html', {
@@ -306,6 +368,7 @@ def get_step_template(request, step_number):
         return render(request, '1_read_the_docs.html')
 
 @require_POST
+@require_active_session
 def select_file(request):
     """Handle file selection and return the updated main content area."""
     selected_file = request.POST.get('file')
@@ -320,89 +383,106 @@ def select_file(request):
     })
 
 @require_GET
+@require_active_session
 def serve_image(request, filename):
-    """Serve the selected image file."""
+    """Serve the selected image file from the active session."""
     if not request.user_state.get('receipt_zip'):
+        logger.warning("Image request without uploaded receipt state: %s", filename)
         return HttpResponse("No file uploaded", status=404)
-    
-    # Get the extraction directory
-    zip_filename = request.user_state['receipt_zip']
-    extract_dir_name = Path(zip_filename).stem
-    image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / filename
-    
-    if not image_path.exists() or not image_path.is_file():
-        return HttpResponse("File not found", status=404)
-    
-    # Serve the file
-    return FileResponse(open(image_path, 'rb'), content_type='image/jpeg')
 
-def image_to_dataframe_dict(image_path, openai_api_key) -> tuple[list[dict], float]:
-    """Extract receipt data from image using OpenAI API."""
+    extract_dir = request.active_session.get_unzipped_dir().resolve()
+
+    try:
+        image_path = (extract_dir / filename).resolve()
+        image_path.relative_to(extract_dir)
+    except ValueError:
+        logger.warning("Blocked path traversal for image request: %s", filename)
+        return HttpResponse("Invalid path", status=404)
+
+    if not image_path.exists() or not image_path.is_file():
+        logger.warning(
+            "Image not found on disk: %s (extract dir: %s)",
+            image_path,
+            extract_dir,
+        )
+        return HttpResponse("File not found", status=404)
+
+    content_type, _ = mimetypes.guess_type(str(image_path))
+    return FileResponse(open(image_path, 'rb'), content_type=content_type or 'application/octet-stream')
+
+def image_to_dataframe_dict(image_path, gemini_api_key) -> tuple[list[dict], float]:
+    """Extract receipt data from image using the Gemini API."""
+    gemini_model = os.environ.get('GEMINI_MODEL', 'gemini-3.1-flash-lite')
     logger.debug(f"Starting image extraction for: {image_path}")
     logger.debug(f"Image path exists: {image_path.exists()}")
-    
+
+    extraction_prompt = (
+        "Analyze this image of a receipt. Extract the items and their prices. "
+        "Ensure to account for discounts, which are often indicated by a minus sign "
+        "in front of the price or as a separate line item. Subtract any discounts from "
+        "the corresponding item's price. Return the result as a Python list of dictionaries, "
+        "where each dictionary has 'item' and 'price' keys. The 'price' should be a float. "
+        "Do not include any explanatory text, just the Python code for the list of dictionaries. "
+        "Return the result as a Python list of dictionaries, without the markdown formatting of the code."
+    )
+
     try:
-        # Encode the image
         logger.debug("Reading and encoding image...")
         with open(image_path, "rb") as image_file:
             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
         logger.debug(f"Image encoded successfully. Length: {len(encoded_image)}")
 
-        # Prepare the API request
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {openai_api_key}"
-        }
-
         payload = {
-            "model": "gpt-4o",
-            "messages": [
+            "contents": [
                 {
-                    "role": "user",
-                    "content": [
+                    "parts": [
+                        {"text": extraction_prompt},
                         {
-                            "type": "text",
-                            "text": (
-                                "Analyze this image of a receipt. Extract the items and their prices. "
-                                "Ensure to account for discounts, which are often indicated by a minus sign "
-                                "in front of the price or as a separate line item. Subtract any discounts from "
-                                "the corresponding item's price. Return the result as a Python list of dictionaries, "
-                                "where each dictionary has 'item' and 'price' keys. The 'price' should be a float. "
-                                "Do not include any explanatory text, just the Python code for the list of dictionaries. Return the result as a Python list of dictionaries, without the markdown formatting of the code."
-                            )
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{encoded_image}"
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": encoded_image,
                             }
-                        }
+                        },
                     ]
                 }
             ],
-            "max_tokens": 5000
+            "generationConfig": {
+                "maxOutputTokens": 5000,
+            },
         }
 
-        logger.info("Making API request to OpenAI for image extraction")
-        # Make the API request
-        response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+        api_url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{gemini_model}:generateContent?key={gemini_api_key}"
+        )
+
+        logger.info("Making API request to Gemini (%s) for image extraction", gemini_model)
+        response = requests.post(api_url, json=payload, timeout=120)
         logger.debug(f"API response status: {response.status_code}")
-        
+
         if response.status_code != 200:
             logger.error(f"API error response: {response.text}")
-            raise Exception(f"OpenAI API error: {response.status_code} - {response.text}")
+            raise Exception(f"Gemini API error: {response.status_code} - {response.text}")
 
         response_json = response.json()
         logger.debug(f"Response JSON keys: {response_json.keys()}")
-        
-        tokens_used = response_json['usage']['total_tokens']
-        request_cost = ((0.03/1000) * tokens_used)/4 # /4 empirically determined from https://platform.openai.com/usage
 
-        # Extract and process the result
-        result = response_json['choices'][0]['message']['content']
+        usage = response_json.get('usageMetadata', {})
+        prompt_tokens = usage.get('promptTokenCount', 0)
+        output_tokens = usage.get('candidatesTokenCount', 0)
+        request_cost = (prompt_tokens * 0.25 + output_tokens * 1.50) / 1_000_000
+
+        candidates = response_json.get('candidates', [])
+        if not candidates:
+            raise Exception("Gemini API returned no candidates")
+
+        parts = candidates[0].get('content', {}).get('parts', [])
+        if not parts:
+            raise Exception("Gemini API returned no content parts")
+
+        result = parts[0].get('text', '')
         logger.debug(f"Raw API result: {result}")
 
-        # Extract the Python code from the markdown
         try:
             result_as_string = re.sub(r'\n', '', result)
             result = ast.literal_eval(result_as_string)
@@ -423,6 +503,7 @@ def image_to_dataframe_dict(image_path, openai_api_key) -> tuple[list[dict], flo
         raise
 
 @require_POST
+@require_active_session
 def extract_image_data(request):
     """Extract receipt data from the selected image using OpenAI API."""
     logger.debug("Starting image data extraction")
@@ -440,13 +521,11 @@ def extract_image_data(request):
         logger.error("No receipt ZIP file found in state")
         return HttpResponse('<div class="alert alert-error">No receipt ZIP file found in state</div>', status=400)
     
-    # Get the image path
-    zip_filename = request.user_state['receipt_zip']
-    extract_dir_name = Path(zip_filename).stem
-    image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / selected_file
-    
-    logger.debug(f"Zip filename: {zip_filename}")
-    logger.debug(f"Extract dir name: {extract_dir_name}")
+    try:
+        image_path = get_image_path(request.user_state, selected_file)
+    except ValueError:
+        return HttpResponse('<div class="alert alert-error">Invalid image path</div>', status=404)
+
     logger.debug(f"Image path: {image_path}")
     logger.debug(f"Image path exists: {image_path.exists()}")
     
@@ -454,18 +533,18 @@ def extract_image_data(request):
         logger.error(f"Image file not found at: {image_path}")
         return HttpResponse(f'<div class="alert alert-error">Image file not found at: {image_path}</div>', status=404)
     
-    # Get OpenAI API key from environment
+    # Get Gemini API key from environment
     try:
-        openai_api_key = os.environ['OPENAI_API_KEY']
-        logger.debug(f"OpenAI API key configured: {bool(openai_api_key)}")
+        gemini_api_key = os.environ['GEMINI_API_KEY']
+        logger.debug(f"Gemini API key configured: {bool(gemini_api_key)}")
     except KeyError:
-        logger.error("OpenAI API key not configured")
-        return HttpResponse('<div class="alert alert-error">OpenAI API key not configured. Please set OPENAI_API_KEY in .config/.env file.</div>', status=500)
+        logger.error("Gemini API key not configured")
+        return HttpResponse('<div class="alert alert-error">Gemini API key not configured.</div>', status=500)
     
     try:
         logger.info(f"Starting AI extraction for {selected_file}")
         # Extract data from image
-        extracted_data, cost = image_to_dataframe_dict(image_path, openai_api_key)
+        extracted_data, cost = image_to_dataframe_dict(image_path, gemini_api_key)
         logger.info(f"Extraction completed. Found {len(extracted_data)} items, cost: ${cost:.4f}")
         
         # Add cost to total API costs immediately after API call
@@ -490,6 +569,7 @@ def extract_image_data(request):
         return HttpResponse(f'<div class="alert alert-error">Extraction failed: {str(e)}</div>', status=500)
 
 @require_POST
+@require_active_session
 def save_extraction(request):
     """Save the filtered extraction data to state."""
     try:
@@ -501,14 +581,8 @@ def save_extraction(request):
         
         # Parse the JSON data
         filtered_data = json.loads(data_json)
-        
-        # Initialize extracted state if it doesn't exist
-        if 'extracted' not in request.user_state:
-            request.user_state['extracted'] = {}
-        
-        # Save the data for this specific file in the same format as confirm_extraction
-        # request.user_state['extracted'][file_name] = [{"item": "", "price": ""}, ...]
-        request.user_state['extracted'][file] = filtered_data
+
+        store_extracted_data(request.user_state, file, filtered_data)
         
         logger.info(f"Saved {len(filtered_data)} items for {file}")
         
@@ -523,6 +597,7 @@ def save_extraction(request):
         return JsonResponse({'error': f'Save failed: {str(e)}'}, status=500)
 
 @require_POST
+@require_active_session
 def confirm_extraction(request):
     """Confirm and finalize the extraction data, storing it in STATE."""
     try:
@@ -548,16 +623,11 @@ def confirm_extraction(request):
             if not isinstance(item, dict) or 'item' not in item or 'price' not in item:
                 return JsonResponse({'error': 'Invalid item format: expected {"item": "", "price": ""}'}, status=400)
         
-        # Initialize extracted state if it doesn't exist
-        if 'extracted' not in request.user_state:
-            request.user_state['extracted'] = {}
-        
         # Store the confirmed data for this specific file in the exact format requested
-        # request.user_state['extracted'][file_name] = [{"item": "", "price": ""}, ...]
-        request.user_state['extracted'][selected_file] = extracted_data
-        
+        store_extracted_data(request.user_state, selected_file, extracted_data)
+
         # Mark the file as extracted instead of removing it
-        update_file_status(selected_file, 'extracted')
+        update_file_status(request.user_state, selected_file, 'extracted')
         
         logger.info(f"Confirmed extraction: {len(extracted_data)} items for {selected_file}")
         logger.debug(f"Data structure - Type: {type(extracted_data)}, Length: {len(extracted_data)}")
@@ -578,29 +648,24 @@ def confirm_extraction(request):
         return JsonResponse({'error': f'Confirmation failed: {str(e)}'}, status=500)
 
 @require_POST
+@require_active_session
 def clear_selection(request):
     """Clear the selected file and return to initial extraction state."""
     try:
-        # Clear the selected file from STATE
         if 'selected_file' in request.user_state:
             del request.user_state['selected_file']
         
         logger.debug("Cleared selected file from state")
-        logger.debug(f"Remaining files to process: {len(get_files_by_status('tbd'))}")
+        logger.debug(f"Remaining files to process: {len(get_files_by_status(request.user_state, 'tbd'))}")
         
         # Check if all files have been processed (no more TBD files)
-        if not get_files_by_status('tbd') and request.user_state.get('extracted', {}):
+        if not get_files_by_status(request.user_state, 'tbd') and request.user_state.get('extracted', {}):
             # All files have been processed, move to sorting step
             request.user_state['current_step'] = 3  # Move to Sort step
             logger.info("All files processed, advancing to Sort step")
         
         # Return the full page template with updated state
-        return render(request, 'start_page.html', {
-            'current_step': request.user_state['current_step'],
-            'extracted_files': request.user_state.get('extracted_files', []),
-            'state': request.user_state.get_state(),
-            'user': request.user
-        })
+        return render(request, 'start_page.html', _wizard_context(request))
         
     except Exception as e:
         error_details = traceback.format_exc()
@@ -609,6 +674,7 @@ def clear_selection(request):
         return HttpResponse(f'<div class="alert alert-error">Clear selection failed: {str(e)}</div>', status=500)
 
 @require_POST
+@require_active_session
 def start_sorting(request):
     """Initialize the sorting process by aggregating all extracted items."""
     try:
@@ -646,12 +712,7 @@ def start_sorting(request):
         request.user_state['current_step'] = 3
         
         # Return the updated sort template
-        return render(request, 'start_page.html', {
-            'current_step': request.user_state['current_step'],
-            'extracted_files': request.user_state.get('extracted_files', []),
-            'state': request.user_state.get_state(),
-            'user': request.user
-        })
+        return render(request, 'start_page.html', _wizard_context(request))
         
     except Exception as e:
         error_details = traceback.format_exc()
@@ -660,6 +721,7 @@ def start_sorting(request):
         return HttpResponse(f'<div class="alert alert-error">Sorting initialization failed: {str(e)}</div>', status=500)
 
 @require_POST
+@require_active_session
 def assign_item(request):
     """Assign current item to a person (sebastian, iva, or both)."""
     try:
@@ -668,15 +730,8 @@ def assign_item(request):
         if assignee not in ['sebastian', 'iva', 'both']:
             return JsonResponse({'error': 'Invalid assignee'}, status=400)
         
-        # Safety check: Initialize consumption if it doesn't exist
-        if 'consumption' not in request.user_state:
-            request.user_state['consumption'] = {
-                'sebastian': [],
-                'iva': [],
-                'both': []
-            }
-            logger.warning("Consumption was not initialized, initializing now")
-        
+        ensure_consumption_initialized(request.user_state)
+
         current_index = request.user_state.get('current_sort_index', 0)
         sort_items = request.user_state.get('sort_items', [])
         
@@ -684,22 +739,23 @@ def assign_item(request):
             return JsonResponse({'error': 'No more items to sort'}, status=400)
         
         current_item = sort_items[current_index]
-        
-        # Add item to the appropriate list
-        request.user_state['consumption'][assignee].append({
-            'item': current_item['item'],
-            'price': current_item['price'],
-            'source_file': current_item.get('source_file', '')
-        })
-        
-        # Move to next item
-        request.user_state['current_sort_index'] += 1
+        new_index = current_index + 1
+
+        def assign_current_item(state):
+            state['consumption'][assignee].append({
+                'item': current_item['item'],
+                'price': normalize_price(current_item['price']),
+                'source_file': current_item.get('source_file', ''),
+            })
+            state['current_sort_index'] = new_index
+
+        request.user_state.mutate(assign_current_item)
         
         logger.info(f"Assigned '{current_item['item']}' (CHF {current_item['price']}) to {assignee}")
-        logger.debug(f"Progress: {request.user_state['current_sort_index']}/{len(sort_items)}")
+        logger.debug(f"Progress: {new_index}/{len(sort_items)}")
         
         # Check if we're done
-        if request.user_state['current_sort_index'] >= len(sort_items):
+        if new_index >= len(sort_items):
             # All items sorted - move directly to aggregation
             request.user_state['current_step'] = 4
             calculate_aggregation(request.user_state)
@@ -714,7 +770,8 @@ def assign_item(request):
         
         # Return the updated sort template with next item
         return render(request, '4_sort.html', {
-            'state': request.user_state.get_state()
+            'state': request.user_state.get_state(),
+            'sort_display': prepare_sort_display(request.user_state),
         })
         
     except Exception as e:
@@ -724,6 +781,7 @@ def assign_item(request):
         return JsonResponse({'error': f'Assignment failed: {str(e)}'}, status=500)
 
 @require_GET
+@require_active_session
 def get_current_sort_item(request):
     """Get the current item to be sorted and return HTML."""
     try:
@@ -795,33 +853,14 @@ def get_current_sort_item(request):
         
         current_item = sort_items[current_index]
         total_items = len(sort_items)
-        
+        sort_display = prepare_sort_display(request.user_state)
+
         logger.debug(f"Displaying item: {current_item['item']} (CHF {current_item['price']})")
-        
-        # Calculate progress percentage
-        progress_percentage = int((current_index / total_items) * 100) if total_items > 0 else 0
-        
-        # Return HTML for current item and progress update
-        progress_text = f"Item {current_index + 1} of {total_items}"
-        
-        return HttpResponse(f"""
-            <div class="space-y-4">
-                <h3 class="text-xl font-bold text-base-content">{current_item['item']}</h3>
-                <p class="text-2xl font-mono text-primary">CHF {current_item['price']}</p>
-                <p class="text-sm text-base-content/60">From: {current_item.get('source_file', '')}</p>
-            </div>
-            <script>
-                // Update progress bar and numbers only
-                document.getElementById('sorting-progress').value = {progress_percentage};
-                document.getElementById('current-item-number').textContent = '{current_index + 1}';
-                document.getElementById('total-items-number').textContent = '{total_items}';
-                
-                // Enable buttons
-                document.getElementById('sebastian-btn').disabled = false;
-                document.getElementById('iva-btn').disabled = false;
-                document.getElementById('both-btn').disabled = false;
-            </script>
-        """)
+
+        return render(request, 'partials/sort_current_item.html', {
+            'sort_display': sort_display,
+            'update_controls': True,
+        })
         
     except Exception as e:
         error_details = traceback.format_exc()
@@ -876,7 +915,8 @@ def calculate_aggregation(user_state):
         }
         
         # Store in STATE for access in template
-        user_state['aggregation'] = aggregation_data
+        user_state.mutate(lambda state: state.update({'aggregation': aggregation_data}))
+        user_state.session.mark_completed()
         
         logger.info(f"Aggregation calculated: Total CHF {aggregation_data['grand_total']:.2f}")
         logger.info(f"Transfer payment: {transfer_direction} CHF {transfer_amount:.2f}")
@@ -897,6 +937,7 @@ def calculate_aggregation(user_state):
         }
 
 @require_POST
+@require_active_session
 def start_extraction(request):
     """Initialize the extraction process and set the first file as current."""
     try:
@@ -924,18 +965,14 @@ def start_extraction(request):
         logger.info(f"First TBD file: {request.user_state['current_file']}")
         
         # Return the full page with updated state
-        return render(request, 'start_page.html', {
-            'current_step': request.user_state['current_step'],
-            'extracted_files': request.user_state.get('extracted_files', []),
-            'state': request.user_state.get_state(),
-            'user': request.user
-        })
+        return render(request, 'start_page.html', _wizard_context(request))
         
     except Exception as e:
         logger.error(f"Failed to start extraction: {str(e)}")
         return HttpResponse(f'<div class="alert alert-error">Failed to start extraction: {str(e)}</div>', status=500)
 
 @require_POST
+@require_active_session
 def extract_current_image(request):
     """Extract receipt data from the current image in the sequence."""
     try:
@@ -951,24 +988,24 @@ def extract_current_image(request):
             logger.error("No receipt ZIP file found in state")
             return HttpResponse('<div class="alert alert-error">No receipt ZIP file found in state</div>', status=400)
         
-        # Get the image path
-        zip_filename = request.user_state['receipt_zip']
-        extract_dir_name = Path(zip_filename).stem
-        image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / current_file
+        try:
+            image_path = get_image_path(request.user_state, current_file)
+        except ValueError:
+            return HttpResponse('<div class="alert alert-error">Invalid image path</div>', status=404)
         
         if not image_path.exists():
             logger.error(f"Image file not found at: {image_path}")
             return HttpResponse(f'<div class="alert alert-error">Image file not found</div>', status=404)
         
-        # Get OpenAI API key from environment
+        # Get Gemini API key from environment
         try:
-            openai_api_key = os.environ['OPENAI_API_KEY']
+            gemini_api_key = os.environ['GEMINI_API_KEY']
         except KeyError:
-            logger.error("OpenAI API key not configured")
-            return HttpResponse('<div class="alert alert-error">OpenAI API key not configured</div>', status=500)
+            logger.error("Gemini API key not configured")
+            return HttpResponse('<div class="alert alert-error">Gemini API key not configured</div>', status=500)
         
         # Extract data from image
-        extracted_data, cost = image_to_dataframe_dict(image_path, openai_api_key)
+        extracted_data, cost = image_to_dataframe_dict(image_path, gemini_api_key)
         logger.info(f"Extraction completed. Found {len(extracted_data)} items, cost: ${cost:.4f}")
         
         # Add cost to total API costs
@@ -996,6 +1033,7 @@ def extract_current_image(request):
         return HttpResponse(f'<div class="alert alert-error">Extraction failed: {str(e)}</div>', status=500)
 
 @require_POST
+@require_active_session
 def skip_current_file(request):
     """Skip the current file and move to the next one."""
     try:
@@ -1003,7 +1041,7 @@ def skip_current_file(request):
         if current_file:
             logger.info(f"Skipping file: {current_file}")
             # Mark as skipped instead of removing
-            update_file_status(current_file, 'skipped')
+            update_file_status(request.user_state, current_file, 'skipped')
         
         return next_file(request)
         
@@ -1011,97 +1049,72 @@ def skip_current_file(request):
         logger.error(f"Failed to skip current file: {str(e)}")
         return HttpResponse(f'<div class="alert alert-error">Failed to skip file: {str(e)}</div>', status=500)
 
-@require_POST  
+@require_POST
+@require_active_session
 def next_file(request):
     """Move to the next file in the extraction sequence."""
     try:
-        # Get current progress
-        total_files = get_total_files(request.user_state)
-        files_processed = get_processed_files_count(request.user_state)
+        user_state = request.user_state
+        total_files = get_total_files(user_state)
+        files_processed = get_processed_files_count(user_state)
         progress_percentage = int((files_processed / total_files) * 100) if total_files > 0 else 0
-        
-        request.user_state['files_processed'] = files_processed
-        request.user_state['progress_percentage'] = progress_percentage
-        
-        # Get next TBD file
-        next_file = get_next_tbd_file(request.user_state)
-        
-        if next_file:
-            # Set next TBD file as current
-            request.user_state['current_file'] = next_file['file']
-            logger.info(f"Moving to next TBD file: {request.user_state['current_file']}")
+
+        next_tbd = get_next_tbd_file(user_state)
+
+        if next_tbd:
+            user_state['current_file'] = next_tbd['file']
+            user_state['files_processed'] = files_processed
+            user_state['progress_percentage'] = progress_percentage
+            logger.info(f"Moving to next TBD file: {user_state['current_file']}")
         else:
-            # All files processed
-            request.user_state['current_file'] = None
+            state = user_state.get_state()
+            state['current_file'] = None
+            state['files_processed'] = files_processed
+            state['progress_percentage'] = progress_percentage
             logger.info("All files processed, checking what to do next")
-            
-            # Prepare sort items from all extracted data
+
             sort_items = []
-            if request.user_state.get('extracted', {}):
-                for filename, data in request.user_state['extracted'].items():
-                    for item in data:
-                        sort_items.append({
-                            'item': item['item'],
-                            'price': float(item['price']),
-                            'source_file': filename
-                        })
-                logger.info(f"Found {len(sort_items)} items from extracted data")
-            
+            for filename, data in state.get('extracted', {}).items():
+                for item in data:
+                    sort_items.append({
+                        'item': item['item'],
+                        'price': float(item['price']),
+                        'source_file': filename
+                    })
+            logger.info(
+                "Extracted data files: %s, sort items: %s",
+                list(state.get('extracted', {}).keys()),
+                len(sort_items),
+            )
+
             if sort_items:
-                # We have items to sort - go to Sort step
-                request.user_state['current_step'] = 3  # Move to Sort step
-                request.user_state['sort_items'] = sort_items
-                request.user_state['current_sort_index'] = 0
-                logger.info(f"Moving to Sort step with {len(sort_items)} items")
-            else:
-                # No items to sort - skip directly to aggregation with empty consumption
-                request.user_state['current_step'] = 4  # Move to Aggregate step
-                request.user_state['sort_items'] = []
-                request.user_state['current_sort_index'] = 0
-                # Initialize empty consumption
-                request.user_state['consumption'] = {
+                state['current_step'] = 3
+                state['sort_items'] = sort_items
+                state['current_sort_index'] = 0
+                state['consumption'] = {
                     'sebastian': [],
                     'iva': [],
                     'both': []
                 }
-                calculate_aggregation(request.user_state)
+                logger.info(f"Moving to Sort step with {len(sort_items)} items")
+            else:
+                state['current_step'] = 4
+                state['sort_items'] = []
+                state['current_sort_index'] = 0
+                state['consumption'] = {
+                    'sebastian': [],
+                    'iva': [],
+                    'both': []
+                }
+                user_state.save_state(state)
+                calculate_aggregation(user_state)
                 logger.info("No items to sort, skipping directly to Aggregation step")
+                return render(request, 'start_page.html', _wizard_context(request))
+
+            user_state.save_state(state)
         
-        # Return the full page with updated state
-        return render(request, 'start_page.html', {
-            'current_step': request.user_state['current_step'],
-            'extracted_files': request.user_state.get('extracted_files', []),
-            'state': request.user_state.get_state(),
-            'user': request.user
-        })
+        return render(request, 'start_page.html', _wizard_context(request))
         
     except Exception as e:
         logger.error(f"Failed to advance to next file: {str(e)}")
         return HttpResponse(f'<div class="alert alert-error">Failed to advance: {str(e)}</div>', status=500)
-
-def get_files_by_status(status):
-    """Get all files with a specific status from extracted_files."""
-    return [item for item in request.user_state.get('extracted_files', []) if item.get('status') == status]
-
-def get_next_tbd_file(user_state):
-    """Get the next file with 'tbd' status."""
-    tbd_files = get_files_by_status('tbd')
-    return tbd_files[0] if tbd_files else None
-
-def update_file_status(filename, new_status):
-    """Update the status of a specific file in extracted_files."""
-    for item in request.user_state.get('extracted_files', []):
-        if item.get('file') == filename:
-            item['status'] = new_status
-            logger.info(f"Updated {filename} status to {new_status}")
-            return True
-    logger.warning(f"File {filename} not found in extracted_files")
-    return False
-
-def get_total_files(user_state):
-    """Get total number of files."""
-    return len(user_state.get('extracted_files', []))
-
-def get_processed_files_count(user_state):
-    """Get count of files that have been processed (extracted or skipped)."""
-    return len([item for item in user_state.get('extracted_files', []) if item.get('status') != 'tbd'])

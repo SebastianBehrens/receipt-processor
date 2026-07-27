@@ -1,0 +1,46 @@
+<div class="navbar app-navbar bg-base-100 mb-4 lg:mb-6 relative z-40 min-h-14">
+    <div class="navbar-start">
+        <a href="{% url 'core:session_hub' %}" class="btn btn-ghost text-xl font-bold text-primary hover:text-primary-focus">
+            <span class="mr-2">🧾</span>
+            <span class="hidden sm:inline">Receipt Processor</span>
+            <span class="sm:hidden">Receipts</span>
+        </a>
+    </div>
+    <div class="navbar-end">
+        <div class="navbar-toolbar flex items-center gap-2">
+            {% if show_sessions_nav %}
+            <a href="{% url 'core:session_hub' %}" class="btn btn-ghost btn-square h-10 w-10 min-h-10 min-w-10" title="Sessions">
+                <span class="material-symbols-rounded text-xl">folder_open</span>
+            </a>
+            {% else %}
+            <span class="inline-block h-10 w-10 flex-shrink-0" aria-hidden="true"></span>
+            {% endif %}
+
+            <button type="button" class="btn btn-ghost btn-square h-10 w-10 min-h-10 min-w-10" title="Toggle dark mode"
+                    id="theme-toggle" onclick="toggleDarkMode()">
+                <span class="material-symbols-rounded text-xl" id="theme-icon">dark_mode</span>
+            </button>
+
+            {% if user.is_authenticated %}
+            <form id="app-logout-form" method="post" action="{% url 'core:logout' %}" class="hidden">
+                {% csrf_token %}
+            </form>
+            <div class="dropdown dropdown-end">
+                <div tabindex="0" role="button" class="btn btn-ghost btn-square h-10 w-10 min-h-10 min-w-10" title="Account">
+                    <span class="material-symbols-rounded text-xl">person</span>
+                </div>
+                <ul tabindex="0" class="dropdown-content menu menu-sm z-[100] mt-2 w-36 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg">
+                    <li>
+                        <button type="submit" form="app-logout-form">
+                            <span class="material-symbols-rounded text-xl">logout</span>
+                            Logout
+                        </button>
+                    </li>
+                </ul>
+            </div>
+            {% else %}
+            <a href="{% url 'core:login' %}" class="btn btn-primary btn-sm">Login</a>
+            {% endif %}
+        </div>
+    </div>
+</div>

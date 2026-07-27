@@ -6,6 +6,8 @@ from django.contrib.auth.middleware import RemoteUserMiddleware
 from django.contrib.auth import get_user_model, login
 from django.conf import settings
 
+from .utils import get_active_session, get_user_state
+
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
@@ -126,3 +128,20 @@ class AutheliaMiddleware:
 
         response = self.get_response(request)
         return response
+
+
+class UserStateMiddleware:
+    """Attach per-user workflow state when an active session is selected."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        request.active_session = None
+        request.user_state = None
+        if request.user.is_authenticated:
+            session = get_active_session(request)
+            if session:
+                request.active_session = session
+                request.user_state = get_user_state(request)
+        return self.get_response(request)
