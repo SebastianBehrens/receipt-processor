@@ -1,0 +1,42 @@
+# Traefik file-provider config for Receipt Processor.
+# Copy into your Traefik dynamic configuration directory.
+#
+# Requires a global `authelia` forward-auth middleware.
+#
+# Service hostname on the proxy network (Swarm alias):
+#   receipt-processor:8000
+#
+# Authelia access control (required — ForwardAuth alone is not enough):
+#   authelia/config/configuration.yml — domain receipts.epsian.ch,
+#     subject: ['group:service_receipt_processor']
+#   authelia/config/users.yml — add service_receipt_processor to allowed users
+#   ./refresh-authelia.sh
+
+http:
+  routers:
+    receipt-processor-web:
+      rule: "Host(`receipts.epsian.ch`)"
+      entryPoints:
+        - https
+      service: receipt-processor
+      middlewares:
+        - authelia
+        - receipt-processor-headers
+      tls:
+        certResolver: myresolver
+
+  services:
+    receipt-processor:
+      loadBalancer:
+        servers:
+          - url: "http://receipt-processor:8000"
+
+  middlewares:
+    receipt-processor-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "geolocation=(), microphone=(), camera=()"

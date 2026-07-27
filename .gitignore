@@ -3,6 +3,12 @@ example_proj/
 /data
 .DS_Store
 config/.env
+deploy/.env
+deploy/config.local.sh
+deploy/secrets/
+deploy/.django_secret_key
+deploy/.gemini_api_key-deployed.sha256
+deploy/.django_secret_key-deployed.sha256
 **/__pycache__/
 logs/
 db.sqlite3

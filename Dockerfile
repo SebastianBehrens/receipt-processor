@@ -5,6 +5,10 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DJANGO_SETTINGS_MODULE=config.settings
+ENV BASE_DIR=/app
+ENV SECRET_KEY=build-only-not-for-production
+ENV DEBUG=False
+ENV ALLOWED_HOSTS=localhost
 
 # Set work directory
 WORKDIR /app
@@ -29,22 +33,25 @@ RUN pip install --upgrade pip \
 COPY . /app/
 
 # Create staticfiles directory for Django static files
-RUN mkdir -p /app/staticfiles
+RUN mkdir /app/static
 
 # Collect static files
 RUN python manage.py collectstatic --noinput
 
-# Create a non-root user and set ownership
-RUN adduser --disabled-password --gecos '' --uid 1002 appuser \
-    && chown -R 1002:1002 /app
-USER 1002:1002
+# Homelab containers run as docker-user (UID/GID 3002)
+ARG APP_UID=3002
+ARG APP_GID=3002
+RUN groupadd --gid ${APP_GID} docker-user \
+    && useradd --uid ${APP_UID} --gid ${APP_GID} --create-home --shell /bin/bash docker-user \
+    && chown -R ${APP_UID}:${APP_GID} /app
+USER ${APP_UID}:${APP_GID}
 
 # Expose port
 EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8000/ || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"] 

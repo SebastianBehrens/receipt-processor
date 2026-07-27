@@ -1,0 +1,4 @@
+# Optional overrides for config.sh (copy to config.local.sh — gitignored).
+#
+# OP_VAULT="Personal"
+# OP_ITEM="gemini-key-receipt-processor"

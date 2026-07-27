@@ -1,0 +1,54 @@
+services:
+  app:
+    image: ${REGISTRY}/${IMAGE_PREFIX}:${IMAGE_TAG}
+    environment:
+      BASE_DIR: /app
+      DEBUG: "False"
+      ALLOWED_HOSTS: receipts.epsian.ch,receipt-processor,127.0.0.1,localhost
+      CSRF_TRUSTED_ORIGINS: https://receipts.epsian.ch
+      GEMINI_MODEL: gemini-3.1-flash-lite
+    command:
+      - sh
+      - -c
+      - |
+        read -r SECRET_KEY < /run/secrets/django_secret_key
+        read -r GEMINI_API_KEY < /run/secrets/gemini_api_key
+        export SECRET_KEY GEMINI_API_KEY
+        python manage.py migrate --noinput
+        exec python manage.py runserver 0.0.0.0:8000
+    secrets:
+      - gemini_api_key
+      - django_secret_key
+    volumes:
+      - ${DOCKER_DATA_DIR}/receipt-processor/data:/app/data
+      - ${DOCKER_DATA_DIR}/receipt-processor/logs:/app/logs
+      - ${DOCKER_DATA_DIR}/receipt-processor/media:/app/media
+      - ${DOCKER_DATA_DIR}/receipt-processor/db.sqlite3:/app/db.sqlite3
+    networks:
+      proxy:
+        aliases:
+          - receipt-processor
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${SWARM_NODE}
+      restart_policy:
+        condition: any
+        delay: 30s
+
+networks:
+  proxy:
+    external: true
+
+secrets:
+  gemini_api_key:
+    file: ./gemini_api_key.txt
+  django_secret_key:
+    file: ./django_secret_key.txt
