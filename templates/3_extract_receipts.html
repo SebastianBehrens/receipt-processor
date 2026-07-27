@@ -35,6 +35,16 @@
                 <div class="text-right">
                     <div class="text-sm text-base-content/60 mb-1">
                         {{ files_processed }} of {{ total_files }} files completed
+                        {% if state.extracted_files %}
+                            {% comment %}Count TBD files{% endcomment %}
+                            {% with tbd_count=0 %}
+                                {% for file_item in state.extracted_files %}
+                                    {% if file_item.status == 'tbd' %}
+                                        {% comment %}{{ tbd_count|add:"1" }}{% endcomment %}
+                                    {% endif %}
+                                {% endfor %}
+                            {% endwith %}
+                        {% endif %}
                     </div>
                     <div class="w-48">
                         <progress class="progress progress-primary w-full" value="{{ progress_percentage }}" max="100"></progress>
@@ -57,7 +67,7 @@
                         <p class="text-sm text-base-content/60 mb-2 truncate" title="{{ current_file }}">{{ current_file }}</p>
                     </div>
                     <div class="flex-1 bg-base-200 rounded-lg overflow-y-auto min-h-0">
-                        <img src="/core/image/{{ current_file }}/" 
+                        <img src="{% url 'core:serve_image' filename=current_file %}" 
                              alt="{{ current_file }}" 
                              class="w-full h-auto"
                              onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
@@ -98,23 +108,21 @@
                                         hx-post="/core/extract-current-image/"
                                         hx-target="#extracted-data-container"
                                         hx-swap="innerHTML"
-                                        hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                                        hx-vals='{"csrfmiddlewaretoken": "{{ csrf_token }}"}'
                                         hx-on:click="showLoadingState()"
                                         hx-on:htmx:after-request="hideLoadingState()">
                                     <span class="material-symbols-rounded text-xl">auto_awesome</span>
                                     Extract Image Data
                                 </button>
                                 
-                                {% if files_processed > 0 %}
                                 <button class="btn btn-outline w-full"
                                         hx-post="/core/skip-current-file/"
                                         hx-target="body"
                                         hx-swap="innerHTML"
-                                        hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                                        hx-vals='{"csrfmiddlewaretoken": "{{ csrf_token }}"}'>
                                     <span class="material-symbols-rounded text-xl">skip_next</span>
                                     Skip This File
                                 </button>
-                                {% endif %}
                             </div>
                         </div>
                     </div>
@@ -128,7 +136,7 @@
                                     hx-post="/core/start-extraction/"
                                     hx-target="body"
                                     hx-swap="innerHTML"
-                                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                                    hx-vals='{"csrfmiddlewaretoken": "{{ csrf_token }}"}'>
                                 <span class="material-symbols-rounded text-xl">play_arrow</span>
                                 Start Extraction Process
                             </button>

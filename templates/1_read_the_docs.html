@@ -105,7 +105,7 @@
                     hx-post="/core/step/2/"
                     hx-target="body"
                     hx-swap="innerHTML"
-                    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                    hx-vals='{"csrfmiddlewaretoken": "{{ csrf_token }}"}'>
                 <span class="material-symbols-rounded text-xl">arrow_forward</span>
                 Proceed
             </button>

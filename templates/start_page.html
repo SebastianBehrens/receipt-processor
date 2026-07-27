@@ -72,18 +72,21 @@
             </span>
             {% if user.is_authenticated %}
                 <div class="dropdown dropdown-end">
-                    <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
-                        <span class="material-symbols-rounded text-xl">expand_more</span>
+                    <div tabindex="0" role="button" class="btn btn-ghost btn-circle avatar">
+                        <div class="w-10 rounded-full bg-primary text-primary-content flex items-center justify-center">
+                            <span class="text-sm font-bold">{{ user.first_name|first|default:user.username|first }}</span>
+                        </div>
                     </div>
-                    <ul tabindex="0" class="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-52">
-                        {% if user.email %}
-                            <li><a class="text-xs opacity-60">{{ user.email }}</a></li>
-                            <li><hr class="my-1"></li>
-                        {% endif %}
-                        <li><a href="/admin/" target="_blank">Admin Panel</a></li>
-                        <li><a href="#" class="text-error">Sign Out</a></li>
+                    <ul tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-100 rounded-box w-52">
+                        <li><a class="justify-between">
+                            {{ user.get_full_name|default:user.username }}
+                            <span class="badge">{{ user.username }}</span>
+                        </a></li>
+                        <li><a href="{% url 'core:logout' %}">Logout</a></li>
                     </ul>
                 </div>
+            {% else %}
+                <a href="{% url 'core:login' %}" class="btn btn-primary">Login</a>
             {% endif %}
         </div>
     </div>

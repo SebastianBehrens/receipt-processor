@@ -1,16 +1,23 @@
 from django.urls import path
+from django.contrib.auth import views as auth_views
 from . import views
 
 app_name = 'core'
 
 urlpatterns = [
+    # Authentication URLs
+    path('login/', auth_views.LoginView.as_view(template_name='registration/login.html'), name='login'),
+    path('logout/', auth_views.LogoutView.as_view(), name='logout'),
+    
+    # Main application URLs
+    path('', views.start_page, name='start_page'),
     path('step/<int:step_number>/', views.step_view, name='step_view'),
-    path('upload/', views.upload_files, name='upload_files'),
+    path('upload-files/', views.upload_files, name='upload_files'),
     path('restart/', views.restart, name='restart'),
-    path('template/<int:step_number>/', views.get_step_template, name='get_step_template'),
+    path('get-step-template/<int:step_number>/', views.get_step_template, name='get_step_template'),
     path('select-file/', views.select_file, name='select_file'),
-    path('image/<path:filename>/', views.serve_image, name='serve_image'),
-    path('extract-image/', views.extract_image_data, name='extract_image_data'),
+    path('image/<str:filename>/', views.serve_image, name='serve_image'),
+    path('extract-image-data/', views.extract_image_data, name='extract_image_data'),
     path('save-extraction/', views.save_extraction, name='save_extraction'),
     path('confirm-extraction/', views.confirm_extraction, name='confirm_extraction'),
     path('clear-selection/', views.clear_selection, name='clear_selection'),

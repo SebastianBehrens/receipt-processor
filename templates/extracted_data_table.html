@@ -102,7 +102,7 @@
                                 hx-post="/core/extract-current-image/"
                                 hx-target="#extracted-data-container"
                                 hx-swap="innerHTML"
-                                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                                hx-vals='{"csrfmiddlewaretoken": "{{ csrf_token }}"}'
                                 hx-indicator="#loading-indicator">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
@@ -121,10 +121,10 @@
                         
                         {% if show_next_button %}
                         <button class="btn btn-secondary flex-1 sm:flex-none sm:w-32"
-                                hx-post="/core/next-file/"
+                                hx-post="/core/skip-current-file/"
                                 hx-target="body"
                                 hx-swap="innerHTML"
-                                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+                                hx-vals='{"csrfmiddlewaretoken": "{{ csrf_token }}"}'>
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
                             </svg>
@@ -388,12 +388,10 @@ function confirmExtractionAndNext() {
     const formData = new FormData();
     formData.append('extracted_data', JSON.stringify(extractedData));
     formData.append('selected_file', '{{ current_file|escapejs }}');
+    formData.append('csrfmiddlewaretoken', document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}');
     
     fetch('/core/confirm-extraction/', {
         method: 'POST',
-        headers: {
-            'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
-        },
         body: formData
     })
     .then(response => response.json())
@@ -403,11 +401,11 @@ function confirmExtractionAndNext() {
             showToast('success', `✅ Extraction saved! ${extractedData.length} items stored successfully.`);
             console.log('Data stored in STATE:', data);
             
-            // Automatically proceed to next file
+            // Automatically proceed to next file instead of going to step 4
             setTimeout(() => {
                 htmx.ajax('POST', '/core/next-file/', {
-                    headers: {
-                        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
+                    values: {
+                        csrfmiddlewaretoken: document.querySelector('[name=csrfmiddlewaretoken]').value || '{{ csrf_token }}'
                     },
                     target: 'body',
                     swap: 'innerHTML'
@@ -435,7 +433,7 @@ function confirmExtractionAndNext() {
 // Toast notification helper
 function showToast(type, message) {
     const toast = document.createElement('div');
-    toast.className = 'toast toast-top toast-center';
+    toast.className = 'toast toast-top toast-center z-[9999]';
     
     const alertClass = type === 'success' ? 'alert-success' : type === 'error' ? 'alert-error' : 'alert-info';
     

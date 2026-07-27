@@ -9,38 +9,25 @@ import ast
 import json
 import logging
 import traceback
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from django.http import HttpResponse, FileResponse, JsonResponse
 from django.conf import settings
 from django.views.decorators.http import require_GET, require_POST
 from django.utils.text import get_valid_filename
+from django.contrib.auth.decorators import login_required
 from dotenv import load_dotenv
+
+from .utils import (
+    get_user_state, require_auth, get_files_by_status, get_next_tbd_file,
+    update_file_status, get_total_files, get_processed_files_count,
+    ensure_consumption_initialized
+)
 
 # Load environment variables from config/.env
 load_dotenv(Path(settings.BASE_DIR) / 'config' / '.env')
 
 # Set up logging
 logger = logging.getLogger(__name__)
-
-# Global state to track current step
-STATE = {
-    'current_step': 0,  # 0 = Read docs, 1 = Upload, 2 = Extract, 3 = Sort, 4 = Aggregate
-    'receipt_zip': None,
-    'extracted_files': [],
-    'selected_file': None,
-    'payer': None,  # Store the selected payer
-    'consumption': {
-        'sebastian': [],
-        'iva': [],
-        'both': []
-    },
-    'sort_items': [],  # All items to be sorted
-    'current_sort_index': 0,  # Current item being sorted
-    'api_costs_total': 0,  # Track total API costs
-    'current_extraction_index': 0,
-    'files_processed': 0,
-    'progress_percentage': 0
-}
 
 def unzip_receipts(zip_filename):
     """Extract the uploaded ZIP file and return list of extracted files."""
@@ -79,7 +66,7 @@ def unzip_receipts(zip_filename):
                     
                     # Get relative path from extraction directory
                     relative_path = file_path.relative_to(extract_dir)
-                    extracted_files.append(str(relative_path))
+                    extracted_files.append({"file": str(relative_path), "status": "tbd"})
     
     except Exception as e:
         logger.error(f"Error extracting ZIP file: {e}")
@@ -87,44 +74,84 @@ def unzip_receipts(zip_filename):
     
     return extracted_files
 
-@require_GET
+
+def health(request):
+    """Unauthenticated health check for Swarm/Traefik probes."""
+    return HttpResponse("ok", content_type="text/plain")
+
+
+@require_auth
 def start_page(request):
     """Render the start page for the HTMX Receipt Processor."""
+    user_state = request.user_state
     return render(request, 'start_page.html', {
-        'current_step': STATE['current_step'],
-        'extracted_files': STATE.get('extracted_files', []),
-        'state': STATE
+        'current_step': user_state.get('current_step', 0),
+        'extracted_files': user_state.get('extracted_files', []),
+        'state': user_state.get_state(),
+        'user': request.user
     })
 
 @require_POST
+@require_auth
 def step_view(request, step_number):
     """Main view to handle different steps of the receipt processing workflow."""
-    logger.info(f"Step view requested: {step_number}")
+    logger.info(f"Step view requested: {step_number} for user {request.user.username}")
+    user_state = request.user_state
     
     # Update current step (convert to 0-based index for internal use)
-    STATE['current_step'] = step_number - 1
+    user_state['current_step'] = step_number - 1
     
     # If moving to aggregation step (step 5 = index 4), calculate aggregation
     if step_number == 5:
-        calculate_aggregation()
+        calculate_aggregation(user_state)
+    
+    # If moving to sort step (step 4 = index 3), initialize sorting if needed
+    if step_number == 4:
+        # Initialize consumption tracking if not exists
+        ensure_consumption_initialized(user_state)
+        
+        # Initialize sort items if not exists but we have extracted data
+        if not user_state.get('sort_items') and user_state.get('extracted', {}):
+            # Aggregate all items from all files into a single list
+            all_items = []
+            for filename, items in user_state.get('extracted', {}).items():
+                for item in items:
+                    # Add filename for reference
+                    item_with_source = dict(item)
+                    item_with_source['source_file'] = filename
+                    all_items.append(item_with_source)
+            
+            user_state['sort_items'] = all_items
+            user_state['current_sort_index'] = 0
+            logger.info(f"Auto-initialized sorting with {len(all_items)} items for step navigation")
+        
+        # If there are no items to sort, initialize empty sort_items
+        if not user_state.get('sort_items'):
+            user_state['sort_items'] = []
+            user_state['current_sort_index'] = 0
+            logger.info("No items to sort, initialized empty sort_items")
     
     # Calculate progress information for extraction step
-    if step_number == 3 and STATE.get('extracted_files'):  # Step 3 is extraction (0-based index 2)
-        current_index = STATE.get('current_extraction_index', 0)
-        total_files = len(STATE['extracted_files'])
-        files_processed = current_index
+    if step_number == 3 and user_state.get('extracted_files'):  # Step 3 is extraction (0-based index 2)
+        total_files = get_total_files(user_state)
+        files_processed = get_processed_files_count(user_state)
         progress_percentage = int((files_processed / total_files) * 100) if total_files > 0 else 0
         
-        STATE['files_processed'] = files_processed
-        STATE['progress_percentage'] = progress_percentage
+        user_state['files_processed'] = files_processed
+        user_state['progress_percentage'] = progress_percentage
+        
+        # Set current file to next TBD file
+        next_file = get_next_tbd_file(user_state)
+        user_state['current_file'] = next_file['file'] if next_file else None
         
         logger.debug(f"Extraction progress: {files_processed}/{total_files} ({progress_percentage}%)")
     
     # Create context with state information
     context = {
-        'current_step': STATE['current_step'],
-        'extracted_files': STATE.get('extracted_files', []),
-        'state': STATE
+        'current_step': user_state.get('current_step', 0),
+        'extracted_files': user_state.get('extracted_files', []),
+        'state': user_state.get_state(),
+        'user': request.user
     }
     
     logger.debug(f"Rendering step {step_number} with context keys: {list(context.keys())}")
@@ -187,22 +214,24 @@ def upload_files(request):
                 destination.write(chunk)
         
         # Store filename and payer in state
-        STATE['receipt_zip'] = filename
-        STATE['payer'] = payer
+        user_state = request.user_state
+        user_state['receipt_zip'] = filename
+        user_state['payer'] = payer
         
         # Extract the ZIP file and get list of files
         extracted_files = unzip_receipts(filename)
-        STATE['extracted_files'] = extracted_files
+        user_state['extracted_files'] = extracted_files
         
         # Advance to next step
-        STATE['current_step'] = 2  # Move to Extract step
+        user_state['current_step'] = 2  # Move to Extract step
         
         # Return the full page with updated state and success toast
         return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
+            'current_step': user_state['current_step'],
             'show_success_toast': True,
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
+            'extracted_files': user_state.get('extracted_files', []),
+            'state': user_state.get_state(),
+            'user': request.user
         })
     
     # If no file uploaded, return error toast
@@ -224,33 +253,35 @@ def upload_files(request):
 def restart(request):
     """Reset the state and return to step 1."""
     # Reset the global state
-    STATE['current_step'] = 0
+    user_state = request.user_state
+    user_state['current_step'] = 0
     
     # Clear any stored data
-    if 'upload_folder' in STATE:
-        del STATE['upload_folder']
-    if 'receipt_zip' in STATE:
-        del STATE['receipt_zip']
-    if 'extracted_files' in STATE:
-        del STATE['extracted_files']
-    if 'selected_file' in STATE:
-        del STATE['selected_file']
-    if 'payer' in STATE:
-        del STATE['payer']
-    if 'consumption' in STATE:
-        del STATE['consumption']
-    if 'sort_items' in STATE:
-        del STATE['sort_items']
-    if 'current_sort_index' in STATE:
-        del STATE['current_sort_index']
-    if 'api_costs_total' in STATE:
-        del STATE['api_costs_total']
+    if 'upload_folder' in user_state:
+        del user_state['upload_folder']
+    if 'receipt_zip' in user_state:
+        del user_state['receipt_zip']
+    if 'extracted_files' in user_state:
+        del user_state['extracted_files']
+    if 'selected_file' in user_state:
+        del user_state['selected_file']
+    if 'payer' in user_state:
+        del user_state['payer']
+    if 'consumption' in user_state:
+        del user_state['consumption']
+    if 'sort_items' in user_state:
+        del user_state['sort_items']
+    if 'current_sort_index' in user_state:
+        del user_state['current_sort_index']
+    if 'api_costs_total' in user_state:
+        del user_state['api_costs_total']
     
     # Render the full page with reset state
     return render(request, 'start_page.html', {
-        'current_step': STATE['current_step'],
-        'extracted_files': STATE.get('extracted_files', []),
-        'state': STATE
+        'current_step': user_state['current_step'],
+        'extracted_files': user_state.get('extracted_files', []),
+        'state': user_state.get_state(),
+        'user': request.user
     })
 
 @require_GET
@@ -264,11 +295,11 @@ def get_step_template(request, step_number):
         return render(request, '3_extract_receipts.html')
     elif step_number == 4:
         return render(request, '4_sort.html', {
-            'state': STATE
+            'state': request.user_state.get_state()
         })
     elif step_number == 5:
         return render(request, '5_aggregate.html', {
-            'state': STATE
+            'state': request.user_state.get_state()
         })
     else:
         # Default to step 1 if invalid step number
@@ -278,22 +309,24 @@ def get_step_template(request, step_number):
 def select_file(request):
     """Handle file selection and return the updated main content area."""
     selected_file = request.POST.get('file')
-    if selected_file and selected_file in STATE.get('extracted_files', []):
-        STATE['selected_file'] = selected_file
+    # Check if file exists in the new structure
+    file_exists = any(item.get('file') == selected_file for item in request.user_state.get('extracted_files', []))
+    if selected_file and file_exists:
+        request.user_state['selected_file'] = selected_file
     
     # Return just the main content area with the selected file
     return render(request, '3_extract_receipts.html', {
-        'selected_file': STATE.get('selected_file')
+        'selected_file': request.user_state.get('selected_file')
     })
 
 @require_GET
 def serve_image(request, filename):
     """Serve the selected image file."""
-    if not STATE.get('receipt_zip'):
+    if not request.user_state.get('receipt_zip'):
         return HttpResponse("No file uploaded", status=404)
     
     # Get the extraction directory
-    zip_filename = STATE['receipt_zip']
+    zip_filename = request.user_state['receipt_zip']
     extract_dir_name = Path(zip_filename).stem
     image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / filename
     
@@ -393,9 +426,9 @@ def image_to_dataframe_dict(image_path, openai_api_key) -> tuple[list[dict], flo
 def extract_image_data(request):
     """Extract receipt data from the selected image using OpenAI API."""
     logger.debug("Starting image data extraction")
-    logger.debug(f"Current STATE keys: {list(STATE.keys())}")
+    logger.debug(f"Current STATE keys: {list(request.user_state.keys())}")
     
-    selected_file = STATE.get('selected_file')
+    selected_file = request.user_state.get('selected_file')
     logger.info(f"Extracting data from file: {selected_file}")
     
     if not selected_file:
@@ -403,12 +436,12 @@ def extract_image_data(request):
         return HttpResponse('<div class="alert alert-error">No file selected</div>', status=400)
     
     # Check if we have the receipt_zip in state
-    if not STATE.get('receipt_zip'):
+    if not request.user_state.get('receipt_zip'):
         logger.error("No receipt ZIP file found in state")
         return HttpResponse('<div class="alert alert-error">No receipt ZIP file found in state</div>', status=400)
     
     # Get the image path
-    zip_filename = STATE['receipt_zip']
+    zip_filename = request.user_state['receipt_zip']
     extract_dir_name = Path(zip_filename).stem
     image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / selected_file
     
@@ -436,13 +469,13 @@ def extract_image_data(request):
         logger.info(f"Extraction completed. Found {len(extracted_data)} items, cost: ${cost:.4f}")
         
         # Add cost to total API costs immediately after API call
-        if 'api_costs_total' not in STATE:
-            STATE['api_costs_total'] = 0
-        STATE['api_costs_total'] += cost
-        logger.info(f"Total API costs now: ${STATE['api_costs_total']:.4f}")
+        if 'api_costs_total' not in request.user_state:
+            request.user_state['api_costs_total'] = 0
+        request.user_state['api_costs_total'] += cost
+        logger.info(f"Total API costs now: ${request.user_state['api_costs_total']:.4f}")
         
         # Store extracted data in state for later use
-        STATE['extracted_data'] = extracted_data
+        request.user_state['extracted_data'] = extracted_data
         
         # Return the table template
         return render(request, 'extracted_data_table.html', {
@@ -470,12 +503,12 @@ def save_extraction(request):
         filtered_data = json.loads(data_json)
         
         # Initialize extracted state if it doesn't exist
-        if 'extracted' not in STATE:
-            STATE['extracted'] = {}
+        if 'extracted' not in request.user_state:
+            request.user_state['extracted'] = {}
         
         # Save the data for this specific file in the same format as confirm_extraction
-        # STATE['extracted'][file_name] = [{"item": "", "price": ""}, ...]
-        STATE['extracted'][file] = filtered_data
+        # request.user_state['extracted'][file_name] = [{"item": "", "price": ""}, ...]
+        request.user_state['extracted'][file] = filtered_data
         
         logger.info(f"Saved {len(filtered_data)} items for {file}")
         
@@ -516,23 +549,21 @@ def confirm_extraction(request):
                 return JsonResponse({'error': 'Invalid item format: expected {"item": "", "price": ""}'}, status=400)
         
         # Initialize extracted state if it doesn't exist
-        if 'extracted' not in STATE:
-            STATE['extracted'] = {}
+        if 'extracted' not in request.user_state:
+            request.user_state['extracted'] = {}
         
         # Store the confirmed data for this specific file in the exact format requested
-        # STATE['extracted'][file_name] = [{"item": "", "price": ""}, ...]
-        STATE['extracted'][selected_file] = extracted_data
+        # request.user_state['extracted'][file_name] = [{"item": "", "price": ""}, ...]
+        request.user_state['extracted'][selected_file] = extracted_data
         
-        # Remove the processed file from extracted_files list so it doesn't appear in sidebar
-        if 'extracted_files' in STATE and selected_file in STATE['extracted_files']:
-            STATE['extracted_files'].remove(selected_file)
-            logger.info(f"Removed {selected_file} from processing queue")
+        # Mark the file as extracted instead of removing it
+        update_file_status(selected_file, 'extracted')
         
         logger.info(f"Confirmed extraction: {len(extracted_data)} items for {selected_file}")
         logger.debug(f"Data structure - Type: {type(extracted_data)}, Length: {len(extracted_data)}")
         if extracted_data:
             logger.debug(f"First item: {extracted_data[0]}")
-        logger.debug(f"Current extracted files: {list(STATE.get('extracted', {}).keys())}")
+        logger.debug(f"Current extracted files: {list(request.user_state.get('extracted', {}).keys())}")
         
         return JsonResponse({
             'success': True,
@@ -551,23 +582,24 @@ def clear_selection(request):
     """Clear the selected file and return to initial extraction state."""
     try:
         # Clear the selected file from STATE
-        if 'selected_file' in STATE:
-            del STATE['selected_file']
+        if 'selected_file' in request.user_state:
+            del request.user_state['selected_file']
         
         logger.debug("Cleared selected file from state")
-        logger.debug(f"Remaining files to process: {len(STATE.get('extracted_files', []))}")
+        logger.debug(f"Remaining files to process: {len(get_files_by_status('tbd'))}")
         
-        # Check if all files have been processed (extracted_files should be empty)
-        if not STATE.get('extracted_files') and STATE.get('extracted', {}):
+        # Check if all files have been processed (no more TBD files)
+        if not get_files_by_status('tbd') and request.user_state.get('extracted', {}):
             # All files have been processed, move to sorting step
-            STATE['current_step'] = 3  # Move to Sort step
+            request.user_state['current_step'] = 3  # Move to Sort step
             logger.info("All files processed, advancing to Sort step")
         
         # Return the full page template with updated state
         return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
+            'current_step': request.user_state['current_step'],
+            'extracted_files': request.user_state.get('extracted_files', []),
+            'state': request.user_state.get_state(),
+            'user': request.user
         })
         
     except Exception as e:
@@ -581,15 +613,15 @@ def start_sorting(request):
     """Initialize the sorting process by aggregating all extracted items."""
     try:
         logger.debug("Initializing sorting process")
-        logger.debug(f"Extracted files available: {list(STATE.get('extracted', {}).keys())}")
+        logger.debug(f"Extracted files available: {list(request.user_state.get('extracted', {}).keys())}")
         
         # Check if we have extracted data
-        if not STATE.get('extracted'):
+        if not request.user_state.get('extracted'):
             return HttpResponse('<div class="alert alert-error">No extracted data found</div>', status=400)
         
         # Initialize consumption tracking if not exists
-        if 'consumption' not in STATE:
-            STATE['consumption'] = {
+        if 'consumption' not in request.user_state:
+            request.user_state['consumption'] = {
                 'sebastian': [],
                 'iva': [],
                 'both': []
@@ -597,27 +629,28 @@ def start_sorting(request):
         
         # Aggregate all items from all files into a single list
         all_items = []
-        for filename, items in STATE['extracted'].items():
+        for filename, items in request.user_state.get('extracted', {}).items():
             for item in items:
                 # Add filename for reference
                 item_with_source = dict(item)
                 item_with_source['source_file'] = filename
                 all_items.append(item_with_source)
         
-        STATE['sort_items'] = all_items
-        STATE['current_sort_index'] = 0
+        request.user_state['sort_items'] = all_items
+        request.user_state['current_sort_index'] = 0
         
         logger.info(f"Initialized sorting with {len(all_items)} total items")
-        logger.debug(f"Items from {len(STATE['extracted'])} files")
+        logger.debug(f"Items from {len(request.user_state['extracted'])} files")
         
         # Move to sorting step
-        STATE['current_step'] = 3
+        request.user_state['current_step'] = 3
         
         # Return the updated sort template
         return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
+            'current_step': request.user_state['current_step'],
+            'extracted_files': request.user_state.get('extracted_files', []),
+            'state': request.user_state.get_state(),
+            'user': request.user
         })
         
     except Exception as e:
@@ -635,8 +668,17 @@ def assign_item(request):
         if assignee not in ['sebastian', 'iva', 'both']:
             return JsonResponse({'error': 'Invalid assignee'}, status=400)
         
-        current_index = STATE.get('current_sort_index', 0)
-        sort_items = STATE.get('sort_items', [])
+        # Safety check: Initialize consumption if it doesn't exist
+        if 'consumption' not in request.user_state:
+            request.user_state['consumption'] = {
+                'sebastian': [],
+                'iva': [],
+                'both': []
+            }
+            logger.warning("Consumption was not initialized, initializing now")
+        
+        current_index = request.user_state.get('current_sort_index', 0)
+        sort_items = request.user_state.get('sort_items', [])
         
         if current_index >= len(sort_items):
             return JsonResponse({'error': 'No more items to sort'}, status=400)
@@ -644,35 +686,35 @@ def assign_item(request):
         current_item = sort_items[current_index]
         
         # Add item to the appropriate list
-        STATE['consumption'][assignee].append({
+        request.user_state['consumption'][assignee].append({
             'item': current_item['item'],
             'price': current_item['price'],
             'source_file': current_item.get('source_file', '')
         })
         
         # Move to next item
-        STATE['current_sort_index'] += 1
+        request.user_state['current_sort_index'] += 1
         
         logger.info(f"Assigned '{current_item['item']}' (CHF {current_item['price']}) to {assignee}")
-        logger.debug(f"Progress: {STATE['current_sort_index']}/{len(sort_items)}")
+        logger.debug(f"Progress: {request.user_state['current_sort_index']}/{len(sort_items)}")
         
         # Check if we're done
-        if STATE['current_sort_index'] >= len(sort_items):
+        if request.user_state['current_sort_index'] >= len(sort_items):
             # All items sorted - move directly to aggregation
-            STATE['current_step'] = 4
-            calculate_aggregation()
+            request.user_state['current_step'] = 4
+            calculate_aggregation(request.user_state)
             logger.info("All items sorted, advancing to Aggregation step")
             
             # Return just the aggregate template content with trigger to update sidebar
             response = render(request, '5_aggregate.html', {
-                'state': STATE
+                'state': request.user_state.get_state()
             })
             response['HX-Trigger'] = 'sortingComplete'
             return response
         
         # Return the updated sort template with next item
         return render(request, '4_sort.html', {
-            'state': STATE
+            'state': request.user_state.get_state()
         })
         
     except Exception as e:
@@ -686,14 +728,14 @@ def get_current_sort_item(request):
     """Get the current item to be sorted and return HTML."""
     try:
         logger.debug("Getting current sort item")
-        logger.debug(f"Current index: {STATE.get('current_sort_index', 0)}")
+        logger.debug(f"Current index: {request.user_state.get('current_sort_index', 0)}")
         
         # Check if we need to initialize sorting first
-        if not STATE.get('sort_items') and STATE.get('extracted', {}):
+        if not request.user_state.get('sort_items') and request.user_state.get('extracted', {}):
             logger.debug("No sort_items found, initializing sorting...")
             # Initialize consumption tracking if not exists
-            if 'consumption' not in STATE:
-                STATE['consumption'] = {
+            if 'consumption' not in request.user_state:
+                request.user_state['consumption'] = {
                     'sebastian': [],
                     'iva': [],
                     'both': []
@@ -701,32 +743,52 @@ def get_current_sort_item(request):
             
             # Aggregate all items from all files into a single list
             all_items = []
-            for filename, items in STATE['extracted'].items():
+            for filename, items in request.user_state.get('extracted', {}).items():
                 for item in items:
                     # Add filename for reference
                     item_with_source = dict(item)
                     item_with_source['source_file'] = filename
                     all_items.append(item_with_source)
             
-            STATE['sort_items'] = all_items
-            STATE['current_sort_index'] = 0
+            request.user_state['sort_items'] = all_items
+            request.user_state['current_sort_index'] = 0
             
             logger.info(f"Auto-initialized sorting with {len(all_items)} items")
         
-        current_index = STATE.get('current_sort_index', 0)
-        sort_items = STATE.get('sort_items', [])
+        current_index = request.user_state.get('current_sort_index', 0)
+        sort_items = request.user_state.get('sort_items', [])
         
         logger.debug(f"Current index: {current_index}, Total items: {len(sort_items)}")
         
+        if len(sort_items) == 0:
+            # No items to sort at all - move directly to aggregation
+            request.user_state['current_step'] = 4
+            # Ensure consumption is initialized as empty
+            if 'consumption' not in request.user_state:
+                request.user_state['consumption'] = {
+                    'sebastian': [],
+                    'iva': [],
+                    'both': []
+                }
+            calculate_aggregation(request.user_state)
+            logger.info("No items to sort, moving directly to aggregation")
+            
+            # Return just the aggregate template content with trigger to update sidebar
+            response = render(request, '5_aggregate.html', {
+                'state': request.user_state.get_state()
+            })
+            response['HX-Trigger'] = 'sortingComplete'
+            return response
+        
         if current_index >= len(sort_items):
             # All items sorted - move directly to aggregation
-            STATE['current_step'] = 4
-            calculate_aggregation()
+            request.user_state['current_step'] = 4
+            calculate_aggregation(request.user_state)
             logger.info("All items sorted, showing aggregation results")
             
             # Return just the aggregate template content with trigger to update sidebar
             response = render(request, '5_aggregate.html', {
-                'state': STATE
+                'state': request.user_state.get_state()
             })
             response['HX-Trigger'] = 'sortingComplete'
             return response
@@ -773,13 +835,14 @@ def get_current_sort_item(request):
             </div>
         """)
 
-def calculate_aggregation():
+def calculate_aggregation(user_state):
     """Calculate spending aggregation and transfer payment."""
     try:
-        consumption = STATE.get('consumption', {})
-        payer = STATE.get('payer', '')
+        consumption = user_state.get('consumption', {})
+        payer = user_state.get('payer', '')
         
         logger.debug(f"Calculating aggregation for payer: {payer}")
+        logger.debug(f"Consumption data: {consumption}")
         logger.debug(f"Consumption categories: {[f'{k}={len(v)} items' for k, v in consumption.items()]}")
         
         # Calculate sums for each category
@@ -813,7 +876,7 @@ def calculate_aggregation():
         }
         
         # Store in STATE for access in template
-        STATE['aggregation'] = aggregation_data
+        user_state['aggregation'] = aggregation_data
         
         logger.info(f"Aggregation calculated: Total CHF {aggregation_data['grand_total']:.2f}")
         logger.info(f"Transfer payment: {transfer_direction} CHF {transfer_amount:.2f}")
@@ -837,30 +900,35 @@ def calculate_aggregation():
 def start_extraction(request):
     """Initialize the extraction process and set the first file as current."""
     try:
-        if not STATE.get('extracted_files'):
+        if not request.user_state.get('extracted_files'):
             return HttpResponse('<div class="alert alert-error">No files to extract</div>', status=400)
         
-        # Set the first file as current
-        STATE['current_extraction_index'] = 0
-        STATE['current_file'] = STATE['extracted_files'][0]
+        # Get the first TBD file
+        next_file = get_next_tbd_file(request.user_state)
+        if not next_file:
+            return HttpResponse('<div class="alert alert-error">No files need processing</div>', status=400)
+        
+        request.user_state['current_file'] = next_file['file']
         
         # Initialize extraction tracking
-        if 'extracted' not in STATE:
-            STATE['extracted'] = {}
+        if 'extracted' not in request.user_state:
+            request.user_state['extracted'] = {}
         
         # Initialize progress tracking
-        total_files = len(STATE['extracted_files'])
-        STATE['files_processed'] = 0
-        STATE['progress_percentage'] = 0
+        total_files = get_total_files(request.user_state)
+        files_processed = get_processed_files_count(request.user_state)
+        request.user_state['files_processed'] = files_processed
+        request.user_state['progress_percentage'] = int((files_processed / total_files) * 100) if total_files > 0 else 0
         
-        logger.info(f"Started extraction process with {total_files} files")
-        logger.info(f"First file: {STATE['current_file']}")
+        logger.info(f"Started extraction process with {total_files} total files")
+        logger.info(f"First TBD file: {request.user_state['current_file']}")
         
         # Return the full page with updated state
         return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
+            'current_step': request.user_state['current_step'],
+            'extracted_files': request.user_state.get('extracted_files', []),
+            'state': request.user_state.get_state(),
+            'user': request.user
         })
         
     except Exception as e:
@@ -871,7 +939,7 @@ def start_extraction(request):
 def extract_current_image(request):
     """Extract receipt data from the current image in the sequence."""
     try:
-        current_file = STATE.get('current_file')
+        current_file = request.user_state.get('current_file')
         if not current_file:
             logger.error("No current file set for extraction")
             return HttpResponse('<div class="alert alert-error">No current file set</div>', status=400)
@@ -879,12 +947,12 @@ def extract_current_image(request):
         logger.info(f"Extracting data from current file: {current_file}")
         
         # Check if we have the receipt_zip in state
-        if not STATE.get('receipt_zip'):
+        if not request.user_state.get('receipt_zip'):
             logger.error("No receipt ZIP file found in state")
             return HttpResponse('<div class="alert alert-error">No receipt ZIP file found in state</div>', status=400)
         
         # Get the image path
-        zip_filename = STATE['receipt_zip']
+        zip_filename = request.user_state['receipt_zip']
         extract_dir_name = Path(zip_filename).stem
         image_path = Path(settings.BASE_DIR) / 'data' / '1_unzipped' / extract_dir_name / current_file
         
@@ -904,13 +972,13 @@ def extract_current_image(request):
         logger.info(f"Extraction completed. Found {len(extracted_data)} items, cost: ${cost:.4f}")
         
         # Add cost to total API costs
-        if 'api_costs_total' not in STATE:
-            STATE['api_costs_total'] = 0
-        STATE['api_costs_total'] += cost
-        logger.info(f"Total API costs now: ${STATE['api_costs_total']:.4f}")
+        if 'api_costs_total' not in request.user_state:
+            request.user_state['api_costs_total'] = 0
+        request.user_state['api_costs_total'] += cost
+        logger.info(f"Total API costs now: ${request.user_state['api_costs_total']:.4f}")
         
         # Store extracted data in state for later use
-        STATE['extracted_data'] = extracted_data
+        request.user_state['extracted_data'] = extracted_data
         
         # Return the table template with next file button
         return render(request, 'extracted_data_table.html', {
@@ -931,12 +999,11 @@ def extract_current_image(request):
 def skip_current_file(request):
     """Skip the current file and move to the next one."""
     try:
-        current_file = STATE.get('current_file')
+        current_file = request.user_state.get('current_file')
         if current_file:
             logger.info(f"Skipping file: {current_file}")
-            # Remove from extracted_files list
-            if current_file in STATE.get('extracted_files', []):
-                STATE['extracted_files'].remove(current_file)
+            # Mark as skipped instead of removing
+            update_file_status(current_file, 'skipped')
         
         return next_file(request)
         
@@ -949,52 +1016,92 @@ def next_file(request):
     """Move to the next file in the extraction sequence."""
     try:
         # Get current progress
-        current_index = STATE.get('current_extraction_index', 0)
-        extracted_files = STATE.get('extracted_files', [])
-        
-        # Move to next file
-        current_index += 1
-        STATE['current_extraction_index'] = current_index
-        
-        # Calculate progress
-        total_files = len(extracted_files)
-        files_processed = current_index
+        total_files = get_total_files(request.user_state)
+        files_processed = get_processed_files_count(request.user_state)
         progress_percentage = int((files_processed / total_files) * 100) if total_files > 0 else 0
         
-        STATE['files_processed'] = files_processed
-        STATE['progress_percentage'] = progress_percentage
+        request.user_state['files_processed'] = files_processed
+        request.user_state['progress_percentage'] = progress_percentage
         
-        if current_index < len(extracted_files):
-            # Set next file as current
-            STATE['current_file'] = extracted_files[current_index]
-            logger.info(f"Moving to next file: {STATE['current_file']} ({current_index + 1}/{len(extracted_files)})")
+        # Get next TBD file
+        next_file = get_next_tbd_file(request.user_state)
+        
+        if next_file:
+            # Set next TBD file as current
+            request.user_state['current_file'] = next_file['file']
+            logger.info(f"Moving to next TBD file: {request.user_state['current_file']}")
         else:
             # All files processed
-            STATE['current_file'] = None
-            STATE['current_step'] = 3  # Move to Sort step
-            logger.info("All files processed, advancing to Sort step")
+            request.user_state['current_file'] = None
+            logger.info("All files processed, checking what to do next")
             
             # Prepare sort items from all extracted data
-            if STATE.get('extracted', {}):
-                sort_items = []
-                for filename, data in STATE['extracted'].items():
+            sort_items = []
+            if request.user_state.get('extracted', {}):
+                for filename, data in request.user_state['extracted'].items():
                     for item in data:
                         sort_items.append({
                             'item': item['item'],
                             'price': float(item['price']),
-                            'filename': filename
+                            'source_file': filename
                         })
-                STATE['sort_items'] = sort_items
-                STATE['current_sort_index'] = 0
-                logger.info(f"Prepared {len(sort_items)} items for sorting")
+                logger.info(f"Found {len(sort_items)} items from extracted data")
+            
+            if sort_items:
+                # We have items to sort - go to Sort step
+                request.user_state['current_step'] = 3  # Move to Sort step
+                request.user_state['sort_items'] = sort_items
+                request.user_state['current_sort_index'] = 0
+                logger.info(f"Moving to Sort step with {len(sort_items)} items")
+            else:
+                # No items to sort - skip directly to aggregation with empty consumption
+                request.user_state['current_step'] = 4  # Move to Aggregate step
+                request.user_state['sort_items'] = []
+                request.user_state['current_sort_index'] = 0
+                # Initialize empty consumption
+                request.user_state['consumption'] = {
+                    'sebastian': [],
+                    'iva': [],
+                    'both': []
+                }
+                calculate_aggregation(request.user_state)
+                logger.info("No items to sort, skipping directly to Aggregation step")
         
         # Return the full page with updated state
         return render(request, 'start_page.html', {
-            'current_step': STATE['current_step'],
-            'extracted_files': STATE.get('extracted_files', []),
-            'state': STATE
+            'current_step': request.user_state['current_step'],
+            'extracted_files': request.user_state.get('extracted_files', []),
+            'state': request.user_state.get_state(),
+            'user': request.user
         })
         
     except Exception as e:
         logger.error(f"Failed to advance to next file: {str(e)}")
         return HttpResponse(f'<div class="alert alert-error">Failed to advance: {str(e)}</div>', status=500)
+
+def get_files_by_status(status):
+    """Get all files with a specific status from extracted_files."""
+    return [item for item in request.user_state.get('extracted_files', []) if item.get('status') == status]
+
+def get_next_tbd_file(user_state):
+    """Get the next file with 'tbd' status."""
+    tbd_files = get_files_by_status('tbd')
+    return tbd_files[0] if tbd_files else None
+
+def update_file_status(filename, new_status):
+    """Update the status of a specific file in extracted_files."""
+    for item in request.user_state.get('extracted_files', []):
+        if item.get('file') == filename:
+            item['status'] = new_status
+            logger.info(f"Updated {filename} status to {new_status}")
+            return True
+    logger.warning(f"File {filename} not found in extracted_files")
+    return False
+
+def get_total_files(user_state):
+    """Get total number of files."""
+    return len(user_state.get('extracted_files', []))
+
+def get_processed_files_count(user_state):
+    """Get count of files that have been processed (extracted or skipped)."""
+    return len([item for item in user_state.get('extracted_files', []) if item.get('status') != 'tbd'])
